@@ -87,7 +87,7 @@ class GrokResponse(BaseModel):
     portfolio_assessment: PortfolioAssessment
     decisions: list[TradeDecision]
     overall_stance: str
-    next_review_suggestion_minutes: int = Field(ge=5, le=120)
+    next_review_suggestion_minutes: int = Field(ge=5, le=1440)  # Up to 24h; main.py clamps to MIN_CYCLE_INTERVAL
 
 
 class RiskValidationResult(BaseModel):

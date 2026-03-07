@@ -87,7 +87,13 @@ class OrderManager:
 
         try:
             from hyperliquid.info import Info
-            self.info = Info(base_url=base_url, skip_ws=True)
+            # Pass empty spot_meta — we only trade perps and testnet
+            # spot metadata is often incomplete (causes IndexError).
+            self.info = Info(
+                base_url=base_url,
+                skip_ws=True,
+                spot_meta={"universe": [], "tokens": []},
+            )
         except ImportError:
             logger.warning(
                 "hyperliquid SDK not installed -- Info client unavailable. "

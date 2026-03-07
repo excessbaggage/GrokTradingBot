@@ -52,9 +52,26 @@ class PortfolioManager:
             ``unrealized_pnl``, ``positions`` (list of position dicts).
         """
         try:
-            from config.trading_config import HYPERLIQUID_WALLET_ADDRESS
+            from config.trading_config import (
+                HYPERLIQUID_WALLET_ADDRESS,
+                LIVE_TRADING,
+                STARTING_CAPITAL,
+            )
             address = wallet_address or HYPERLIQUID_WALLET_ADDRESS
             if not address:
+                if not LIVE_TRADING:
+                    # Paper mode — use simulated equity from STARTING_CAPITAL
+                    logger.debug(
+                        "Paper mode: using STARTING_CAPITAL={cap} as equity",
+                        cap=STARTING_CAPITAL,
+                    )
+                    return {
+                        "total_equity": STARTING_CAPITAL,
+                        "available_margin": STARTING_CAPITAL,
+                        "unrealized_pnl": 0.0,
+                        "positions": [],
+                        "margin_used": 0.0,
+                    }
                 logger.error("No wallet address configured for portfolio fetch")
                 return {
                     "total_equity": 0.0,

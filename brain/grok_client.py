@@ -54,7 +54,7 @@ class GrokClient:
         model: str,
         max_tokens: int = GROK_MAX_TOKENS,
         temperature: float = GROK_TEMPERATURE,
-        timeout: float = 30.0,
+        timeout: float = 120.0,
     ) -> None:
         if not api_key:
             raise ValueError("api_key must be provided and non-empty")

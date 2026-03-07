@@ -9,6 +9,7 @@ snapshots via the Hyperliquid Python SDK.  Includes retry logic via
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -29,6 +30,21 @@ from config.trading_config import (
     LIVE_TRADING,
 )
 from utils.logger import logger
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# INTERVAL HELPERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Mapping from interval string to duration in seconds
+_INTERVAL_SECONDS: dict[str, int] = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -62,7 +78,14 @@ class MarketDataFetcher:
             if LIVE_TRADING
             else hl_constants.TESTNET_API_URL
         )
-        self._info = InfoAPI(base_url=base_url, skip_ws=True)
+        # Pass empty spot_meta to skip spot token initialization — we only
+        # trade perpetual futures, and the testnet spot metadata is often
+        # incomplete which causes IndexError inside the SDK.
+        self._info = InfoAPI(
+            base_url=base_url,
+            skip_ws=True,
+            spot_meta={"universe": [], "tokens": []},
+        )
         logger.info(
             "MarketDataFetcher initialized | live={live} url={url}",
             live=LIVE_TRADING,
@@ -92,10 +115,17 @@ class MarketDataFetcher:
             ``low``, ``close``, ``volume`` sorted by time ascending.
         """
         try:
+            # SDK v0.22+ uses positional (name, interval, startTime, endTime).
+            # Compute startTime from the desired number of candles.
+            interval_secs = _INTERVAL_SECONDS.get(interval, 3600)
+            end_ms = int(time.time() * 1000)
+            start_ms = end_ms - (limit * interval_secs * 1000)
+
             snapshot = self._info.candles_snapshot(
-                coin=asset,
-                interval=interval,
-                n_candles=limit,
+                asset,          # name (positional)
+                interval,       # interval
+                start_ms,       # startTime (epoch ms)
+                end_ms,         # endTime (epoch ms)
             )
 
             if not snapshot:
@@ -181,7 +211,7 @@ class MarketDataFetcher:
             # Fetch historical funding for 7d average
             try:
                 funding_history = self._info.funding_history(
-                    coin=asset,
+                    asset,
                     startTime=int(
                         (datetime.now(timezone.utc).timestamp() - 7 * 86400) * 1000
                     ),
@@ -292,7 +322,7 @@ class MarketDataFetcher:
             ``mid_price``.
         """
         try:
-            book = self._info.l2_snapshot(coin=asset)
+            book = self._info.l2_snapshot(asset)
 
             bids_raw = book.get("levels", [[]])[0] if book.get("levels") else []
             asks_raw = book.get("levels", [[], []])[1] if book.get("levels") and len(book["levels"]) > 1 else []
