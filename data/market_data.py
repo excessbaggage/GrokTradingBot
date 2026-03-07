@@ -443,8 +443,13 @@ class MarketDataFetcher:
                     adjustment = (vol_ratio - 1) * 20  # Scale factor from ai-trader
 
                     # Adaptive RSI thresholds
-                    result["adaptive_ob"] = round(min(70 + adjustment, 85), 1)
-                    result["adaptive_os"] = round(max(30 - adjustment, 15), 1)
+                    ob = round(min(70 + adjustment, 85), 1)
+                    os_ = round(max(30 - adjustment, 15), 1)
+                    # Guard against threshold inversion in extreme regimes
+                    if ob <= os_:
+                        ob, os_ = 70.0, 30.0  # Reset to defaults
+                    result["adaptive_ob"] = ob
+                    result["adaptive_os"] = os_
 
                     if vol_ratio > 1.3:
                         result["volatility_regime"] = "high"
@@ -475,7 +480,9 @@ class MarketDataFetcher:
                 rs = avg_gain / avg_loss
                 result["rsi_14"] = round(100 - (100 / (1 + rs)), 1)
             elif pd.notna(avg_gain) and (pd.isna(avg_loss) or avg_loss == 0):
-                result["rsi_14"] = 100.0  # All gains, no losses
+                # If avg_gain is also zero (flat market), RSI is neutral (50)
+                # Only set to 100 when there are actual gains with zero losses
+                result["rsi_14"] = 100.0 if avg_gain > 0 else 50.0
 
         return result
 

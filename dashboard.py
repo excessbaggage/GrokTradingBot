@@ -84,7 +84,8 @@ def api_status():
             "assets": ASSET_UNIVERSE,
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("API error: %s", e)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/portfolio")
@@ -154,10 +155,8 @@ def api_portfolio():
         daily_pnl = float(daily_pnl_row["total_pnl"]) if daily_pnl_row else 0.0
         weekly_pnl = float(weekly_pnl_row["total_pnl"]) if weekly_pnl_row else 0.0
 
-        # Include unrealized PnL in daily/weekly display
-        total_pnl = unrealized_pnl + realized_pnl - total_fees
-        daily_pnl_pct = (total_pnl / STARTING_CAPITAL * 100) if STARTING_CAPITAL > 0 else 0.0
-        weekly_pnl_pct = daily_pnl_pct  # Same for now (first day)
+        daily_pnl_pct = (daily_pnl / STARTING_CAPITAL * 100) if STARTING_CAPITAL > 0 else 0.0
+        weekly_pnl_pct = (weekly_pnl / STARTING_CAPITAL * 100) if STARTING_CAPITAL > 0 else 0.0
 
         return jsonify({
             "equity": round(equity, 2),
@@ -165,15 +164,16 @@ def api_portfolio():
             "total_return": round(
                 ((equity - STARTING_CAPITAL) / STARTING_CAPITAL * 100), 4
             ) if STARTING_CAPITAL > 0 else 0.0,
-            "daily_pnl": round(total_pnl, 2),
+            "daily_pnl": round(daily_pnl, 2),
             "daily_pnl_pct": round(daily_pnl_pct, 4),
-            "weekly_pnl": round(total_pnl, 2),
+            "weekly_pnl": round(weekly_pnl, 2),
             "weekly_pnl_pct": round(weekly_pnl_pct, 4),
             "peak_equity": round(peak, 2),
             "drawdown_pct": round(drawdown, 4),
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("API error: %s", e)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/risk")
@@ -195,7 +195,10 @@ def api_risk():
         ).fetchall()
         consecutive_losses = 0
         for row in recent:
-            if float(row["pnl"]) < 0:
+            pnl = row["pnl"]
+            if pnl is None:
+                continue  # Skip trades closed by sync with no dollar P&L
+            if float(pnl) < 0:
                 consecutive_losses += 1
             else:
                 break
@@ -223,7 +226,8 @@ def api_risk():
             "total_rejections": rejection_count_row["cnt"] if rejection_count_row else 0,
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("API error: %s", e)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/positions")
@@ -257,7 +261,8 @@ def api_positions():
 
         return jsonify({"positions": positions})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("API error: %s", e)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/trades")
@@ -275,7 +280,8 @@ def api_trades():
         db.close()
         return jsonify({"trades": rows_to_dicts(rows)})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("API error: %s", e)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/analysis")
@@ -317,7 +323,8 @@ def api_analysis():
             }
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("API error: %s", e)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/rejections")
@@ -332,7 +339,8 @@ def api_rejections():
         db.close()
         return jsonify({"rejections": rows_to_dicts(rows)})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("API error: %s", e)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/equity-chart")
@@ -390,7 +398,8 @@ def api_equity_chart():
 
         return jsonify({"equity_curve": data})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("API error: %s", e)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -647,6 +656,16 @@ DASHBOARD_HTML = """
         } catch { return ts; }
     }
 
+    function escapeHtml(str) {
+        if (str == null) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
     function pnlColor(val) {
         if (val > 0) return 'text-profit';
         if (val < 0) return 'text-loss';
@@ -759,8 +778,8 @@ DASHBOARD_HTML = """
 
         tbody.innerHTML = data.positions.map(p => `
             <tr>
-                <td class="font-medium">${p.asset}</td>
-                <td class="${sideColor(p.side)} font-medium uppercase">${p.side}</td>
+                <td class="font-medium">${escapeHtml(p.asset)}</td>
+                <td class="${sideColor(p.side)} font-medium uppercase">${escapeHtml(p.side)}</td>
                 <td>${(p.size_pct * 100).toFixed(1)}%</td>
                 <td>${p.leverage}x</td>
                 <td>${fmtPrice(p.entry_price)}</td>
@@ -782,16 +801,16 @@ DASHBOARD_HTML = """
         tbody.innerHTML = data.trades.map(t => `
             <tr>
                 <td class="text-dark-muted text-xs">${fmtTime(t.opened_at)}</td>
-                <td class="font-medium">${t.asset}</td>
-                <td>${t.action}</td>
-                <td class="${sideColor(t.side)} uppercase">${t.side}</td>
+                <td class="font-medium">${escapeHtml(t.asset)}</td>
+                <td>${escapeHtml(t.action)}</td>
+                <td class="${sideColor(t.side)} uppercase">${escapeHtml(t.side)}</td>
                 <td>${(t.size_pct * 100).toFixed(1)}%</td>
                 <td>${fmtPrice(t.entry_price)}</td>
                 <td>${fmtPrice(t.exit_price)}</td>
                 <td class="${pnlColor(t.pnl)}">${t.pnl != null ? fmtUsd(t.pnl) : '-'}</td>
                 <td>
                     <span class="px-2 py-0.5 rounded text-xs ${t.status === 'open' ? 'bg-accent/20 text-accent' : 'bg-dark-border text-dark-muted'}">
-                        ${t.status}
+                        ${escapeHtml(t.status)}
                     </span>
                 </td>
             </tr>
@@ -812,7 +831,7 @@ DASHBOARD_HTML = """
             </div>
             <div class="bg-dark-bg rounded-lg p-3 mb-3">
                 <div class="text-xs text-dark-muted uppercase mb-1">Overall Stance</div>
-                <div class="text-sm leading-relaxed">${typeof a.overall_stance === 'string' ? a.overall_stance : JSON.stringify(a.overall_stance)}</div>
+                <div class="text-sm leading-relaxed">${escapeHtml(typeof a.overall_stance === 'string' ? a.overall_stance : JSON.stringify(a.overall_stance))}</div>
             </div>
         `;
 
@@ -824,10 +843,10 @@ DASHBOARD_HTML = """
                     const biasColor = info.bias === 'long' ? 'text-profit' : info.bias === 'short' ? 'text-loss' : 'text-dark-muted';
                     html += `
                         <div class="bg-dark-bg rounded p-2 text-xs">
-                            <span class="font-bold uppercase">${asset}</span>
-                            <span class="${biasColor} ml-2">${info.bias || '-'}</span>
-                            <span class="text-dark-muted ml-2">${info.conviction || '-'} conviction</span>
-                            ${info.summary ? `<div class="text-dark-muted mt-1">${info.summary}</div>` : ''}
+                            <span class="font-bold uppercase">${escapeHtml(asset)}</span>
+                            <span class="${biasColor} ml-2">${escapeHtml(info.bias || '-')}</span>
+                            <span class="text-dark-muted ml-2">${escapeHtml(info.conviction || '-')} conviction</span>
+                            ${info.summary ? `<div class="text-dark-muted mt-1">${escapeHtml(info.summary)}</div>` : ''}
                         </div>
                     `;
                 }
@@ -841,9 +860,9 @@ DASHBOARD_HTML = """
             decisions.forEach(d => {
                 html += `
                     <div class="bg-dark-bg rounded p-2 text-xs mb-1">
-                        <span class="font-medium">${d.action}</span>
-                        <span class="ml-1">${d.asset}</span>
-                        <span class="text-dark-muted ml-2">${d.conviction} conviction</span>
+                        <span class="font-medium">${escapeHtml(d.action)}</span>
+                        <span class="ml-1">${escapeHtml(d.asset)}</span>
+                        <span class="text-dark-muted ml-2">${escapeHtml(d.conviction)} conviction</span>
                     </div>
                 `;
             });
@@ -867,9 +886,9 @@ DASHBOARD_HTML = """
         tbody.innerHTML = data.rejections.map(r => `
             <tr>
                 <td class="text-dark-muted text-xs">${fmtTime(r.timestamp)}</td>
-                <td class="font-medium">${r.asset}</td>
-                <td>${r.action}</td>
-                <td class="text-loss text-xs">${r.reason}</td>
+                <td class="font-medium">${escapeHtml(r.asset)}</td>
+                <td>${escapeHtml(r.action)}</td>
+                <td class="text-loss text-xs">${escapeHtml(r.reason)}</td>
             </tr>
         `).join('');
     }

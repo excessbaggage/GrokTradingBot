@@ -91,11 +91,11 @@ def empty_db() -> sqlite3.Connection:
 
 @pytest.fixture
 def recent_trade_db() -> sqlite3.Connection:
-    """DB with one trade opened 5 minutes ago (too recent for 30-min gap)."""
+    """DB with one trade opened 2 minutes ago (too recent for 5-min gap)."""
     conn = sqlite3.connect(":memory:")
     _create_trades_table(conn)
-    five_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-    _insert_trade(conn, asset="BTC", opened_at=five_min_ago)
+    two_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+    _insert_trade(conn, asset="BTC", opened_at=two_min_ago)
     yield conn
     conn.close()
 
@@ -113,13 +113,13 @@ def old_trade_db() -> sqlite3.Connection:
 
 @pytest.fixture
 def maxed_trades_db() -> sqlite3.Connection:
-    """DB with 8 trades today (at the daily limit of 8)."""
+    """DB with 50 trades today (at the daily limit of 50)."""
     conn = sqlite3.connect(":memory:")
     _create_trades_table(conn)
-    # Insert 8 trades spread throughout today, all well in the past
-    base = datetime.now(timezone.utc).replace(hour=1, minute=0, second=0, microsecond=0)
-    for i in range(8):
-        opened_at = (base + timedelta(hours=i)).isoformat()
+    # Insert 50 trades spread throughout today, all well in the past
+    base = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    for i in range(50):
+        opened_at = (base + timedelta(minutes=i * 10)).isoformat()
         _insert_trade(conn, asset="BTC", opened_at=opened_at)
     yield conn
     conn.close()
@@ -144,24 +144,24 @@ def healthy_portfolio() -> dict[str, Any]:
 
 @pytest.fixture
 def daily_loss_portfolio() -> dict[str, Any]:
-    """A portfolio that has hit the 5% daily loss limit."""
+    """A portfolio that has hit the 6% daily loss limit."""
     return {
-        "equity": 9_500.0,
+        "equity": 9_400.0,
         "peak_equity": 10_000.0,
-        "daily_pnl_pct": -0.05,
-        "weekly_pnl_pct": -0.05,
+        "daily_pnl_pct": -0.06,
+        "weekly_pnl_pct": -0.06,
         "total_exposure_pct": 0.0,
     }
 
 
 @pytest.fixture
 def weekly_loss_portfolio() -> dict[str, Any]:
-    """A portfolio that has hit the 10% weekly loss limit."""
+    """A portfolio that has hit the 12% weekly loss limit."""
     return {
-        "equity": 9_000.0,
+        "equity": 8_800.0,
         "peak_equity": 10_000.0,
         "daily_pnl_pct": -0.03,
-        "weekly_pnl_pct": -0.10,
+        "weekly_pnl_pct": -0.12,
         "total_exposure_pct": 0.0,
     }
 
@@ -180,13 +180,13 @@ def drawdown_portfolio() -> dict[str, Any]:
 
 @pytest.fixture
 def high_exposure_portfolio() -> dict[str, Any]:
-    """A portfolio with 25% existing exposure (close to 30% limit)."""
+    """A portfolio with 55% existing exposure (close to 60% limit)."""
     return {
         "equity": 10_000.0,
         "peak_equity": 10_000.0,
         "daily_pnl_pct": 0.0,
         "weekly_pnl_pct": 0.0,
-        "total_exposure_pct": 0.25,
+        "total_exposure_pct": 0.55,
     }
 
 

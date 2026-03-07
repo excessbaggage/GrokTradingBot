@@ -495,8 +495,24 @@ class OrderManager:
         notional = decision.size_pct * equity * decision.leverage
         fees = notional * _paper_state.simulated_fee_rate
 
-        # Update paper positions
+        # Update paper positions — warn and clean up if overwriting an existing one
         side_str = "long" if is_buy else "short"
+        if asset in _paper_state.positions:
+            old_pos = _paper_state.positions[asset]
+            logger.warning(
+                "PAPER: Overwriting existing {asset} position ({side} @ {entry}) "
+                "with new {new_side} @ {new_entry}",
+                asset=asset,
+                side=old_pos.get("side"),
+                entry=old_pos.get("entry_price"),
+                new_side=side_str,
+                new_entry=fill_price,
+            )
+            # Cancel any dangling SL/TP orders from the old position
+            for oid, order in list(_paper_state.orders.items()):
+                if order.get("asset") == asset and order.get("status") == "open":
+                    _paper_state.orders[oid]["status"] = "cancelled"
+
         _paper_state.positions[asset] = {
             "asset": asset,
             "side": side_str,

@@ -186,9 +186,11 @@ class DecisionParser:
             if not isinstance(d, dict):
                 continue
 
-            # Fix size_pct: if > 1.0, Grok likely returned a percentage
+            # Fix size_pct: if >= 1.0, Grok likely returned a percentage.
+            # A value of 1.0 means "100%" (not "1%") since max position
+            # size is 25% — no valid trade uses 100% of capital as a decimal.
             size_pct = d.get("size_pct")
-            if isinstance(size_pct, (int, float)) and size_pct > 1.0:
+            if isinstance(size_pct, (int, float)) and size_pct >= 1.0:
                 d["size_pct"] = size_pct / 100.0
                 logger.debug(
                     "Normalized size_pct: {} -> {}",

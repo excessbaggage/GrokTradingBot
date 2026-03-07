@@ -486,6 +486,25 @@ class RiskGuardian:
             and stop is not None and stop > 0
             and tp is not None and tp > 0
         ):
+            # Validate TP is on the correct side of entry
+            is_long = "long" in decision.action
+            if is_long and tp <= entry:
+                return RiskValidationResult(
+                    approved=False,
+                    reason=(
+                        f"Take-profit ({tp}) is at or below entry ({entry}) "
+                        f"for a long trade — TP must be above entry."
+                    ),
+                )
+            if not is_long and tp >= entry:
+                return RiskValidationResult(
+                    approved=False,
+                    reason=(
+                        f"Take-profit ({tp}) is at or above entry ({entry}) "
+                        f"for a short trade — TP must be below entry."
+                    ),
+                )
+
             risk = abs(entry - stop)
             reward = abs(tp - entry)
             if risk == 0:

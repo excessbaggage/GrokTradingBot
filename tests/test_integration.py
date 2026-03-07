@@ -431,16 +431,17 @@ class TestDatabaseRoundTrip:
         # Apply schema again
         conn.executescript(_SCHEMA_SQL)
         conn.commit()
-        # Should still have the 5 user tables + sqlite_sequence (auto-created
-        # by SQLite for AUTOINCREMENT columns) = 6 total.
+        # Should still have the 6 user tables + sqlite_sequence (auto-created
+        # by SQLite for AUTOINCREMENT columns) = 7 total.
         cursor = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name NOT LIKE 'sqlite_%' ORDER BY name"
         )
         user_tables = [row[0] for row in cursor.fetchall()]
-        assert len(user_tables) == 5
+        assert len(user_tables) == 6
         assert set(user_tables) == {
-            "trades", "positions", "grok_logs", "daily_summaries", "rejections"
+            "trades", "positions", "grok_logs", "daily_summaries",
+            "rejections", "equity_snapshots"
         }
         conn.close()
 
@@ -672,7 +673,7 @@ class TestDecisionParserIntegration:
                 {
                     "action": "open_long",
                     "asset": "BTC",
-                    "size_pct": 0.50,  # exceeds 0.10 max
+                    "size_pct": 150.0,  # 150% -> normalized to 1.5 -> exceeds 1.0 max
                     "leverage": 2.0,
                     "entry_price": 67000.0,
                     "stop_loss": 65500.0,
@@ -685,7 +686,7 @@ class TestDecisionParserIntegration:
             ]
         )
         result = parser.parse_response(json.dumps(bad))
-        assert result is None  # size_pct > 0.10 fails validation
+        assert result is None  # size_pct 150% -> normalized to 1.5 -> exceeds 1.0 Pydantic max
 
     def test_parse_close_decision(self):
         """A close decision round-trips through the parser."""
@@ -779,14 +780,14 @@ class TestRiskGuardianWithTradeHistory:
         conn.close()
 
     def test_daily_trade_count_limit(self):
-        """Max 8 trades/day blocks the 9th trade."""
+        """Max 50 trades/day blocks the 51st trade."""
         conn = _make_db()
         guardian = RiskGuardian(risk_params=RISK_PARAMS.copy())
 
-        # Insert 8 trades spread across today
-        base = utc_now().replace(hour=1, minute=0, second=0, microsecond=0)
-        for i in range(8):
-            ts = (base + timedelta(hours=i)).isoformat()
+        # Insert 50 trades spread across today
+        base = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+        for i in range(50):
+            ts = (base + timedelta(minutes=i * 10)).isoformat()
             execute_query(
                 conn,
                 """INSERT INTO trades (asset, side, action, size_pct, leverage,
@@ -796,9 +797,8 @@ class TestRiskGuardianWithTradeHistory:
                  3600.0, ts, ts),
             )
 
-        # The 9th trade should be blocked
+        # The 51st trade should be blocked
         decision = _make_valid_decision(asset="SOL")
-        # Use a portfolio with the time check covered by using a different asset
         result = guardian.validate(decision, self._portfolio(), conn)
         assert not result.approved
         assert "daily trade limit" in result.reason.lower()
@@ -833,7 +833,7 @@ class TestRiskGuardianWithTradeHistory:
         status = guardian.calculate_risk_status(portfolio, conn)
 
         assert status["trades_today"] == 2
-        assert status["max_trades_per_day"] == 8
+        assert status["max_trades_per_day"] == 50
         assert status["daily_loss_remaining"] > 0
         assert status["weekly_loss_remaining"] > 0
         assert status["kill_switch_active"] is False
@@ -978,10 +978,10 @@ class TestFullCycleSimulation:
         """A trade that violates risk limits is rejected, not logged as trade."""
         conn = _make_db()
 
-        # Insert 8 trades today to hit daily limit
-        base = utc_now().replace(hour=1, minute=0, second=0, microsecond=0)
-        for i in range(8):
-            ts = (base + timedelta(hours=i)).isoformat()
+        # Insert 50 trades today to hit daily limit
+        base = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+        for i in range(50):
+            ts = (base + timedelta(minutes=i * 10)).isoformat()
             execute_query(
                 conn,
                 """INSERT INTO trades (asset, side, action, size_pct, leverage,

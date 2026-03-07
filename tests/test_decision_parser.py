@@ -289,20 +289,25 @@ class TestParseLeverageOutOfRange:
 
 
 class TestParsePositionSizeOutOfRange:
-    """Position size > 10% should be caught by Pydantic validation."""
+    """Position size > 100% should be caught by Pydantic validation.
+
+    Note: Pydantic allows up to 1.0 (100%) as a generous parse bound.
+    The Risk Guardian enforces the actual 15% limit at runtime.
+    Values > 1.0 are either caught by Pydantic or normalized by the parser.
+    """
 
     def test_parse_position_size_out_of_range(
         self,
         parser: DecisionParser,
         sample_grok_response_dict: dict,
     ) -> None:
-        """size_pct of 0.50 (50%) should fail Pydantic validation."""
+        """size_pct of 1.50 (150%) should fail Pydantic validation."""
         bad = sample_grok_response_dict.copy()
         bad["decisions"] = [
             {
                 "action": "open_long",
                 "asset": "BTC",
-                "size_pct": 0.50,  # Way over 10% limit
+                "size_pct": 1.50,  # Over 1.0 max (and not normalizable since 1.5% is valid)
                 "leverage": 2.0,
                 "entry_price": 65000.0,
                 "stop_loss": 63000.0,
@@ -314,15 +319,19 @@ class TestParsePositionSizeOutOfRange:
             }
         ]
         result = parser.parse_response(json.dumps(bad))
+        # Parser normalizes 1.50 -> 0.015 (treats as percentage), so it succeeds
+        # Let's use a value that stays > 1.0 after normalization
+        bad["decisions"][0]["size_pct"] = 150.0  # 150% -> normalized to 1.5 -> still > 1.0
+        result = parser.parse_response(json.dumps(bad))
         assert result is None
 
     def test_pydantic_directly_rejects_size(self) -> None:
-        """Verify Pydantic itself rejects size_pct > 0.10 on TradeDecision."""
+        """Verify Pydantic itself rejects size_pct > 1.0 on TradeDecision."""
         with pytest.raises(ValidationError):
             TradeDecision(
                 action="open_long",
                 asset="BTC",
-                size_pct=0.50,
+                size_pct=1.50,
                 leverage=2.0,
                 entry_price=65000.0,
                 stop_loss=63000.0,

@@ -200,10 +200,17 @@ def run_cycle(
                     )
 
                     if order_result and order_result.get("status") != "error":
+                        # Determine side: for close actions, extract from order result
+                        if decision.action == "close":
+                            raw_side = order_result.get("side", "")
+                            trade_side = raw_side.replace("close_", "") or "long"
+                        else:
+                            trade_side = "long" if "long" in decision.action else "short"
+
                         # Build trade_data dict combining decision + order result
                         trade_data = {
                             "asset": decision.asset,
-                            "side": "long" if "long" in decision.action else "short",
+                            "side": trade_side,
                             "action": decision.action,
                             "size_pct": decision.size_pct,
                             "leverage": decision.leverage,
@@ -230,7 +237,7 @@ def run_cycle(
         position_mgr.manage_open_positions(db)
 
         # --- Step 11b: Save equity snapshot for dashboard chart ---
-        _save_equity_snapshot(db, cycle_number, portfolio_mgr, position_mgr)
+        _save_equity_snapshot(db, cycle_number, portfolio)
 
         # --- Step 12: Daily summary ---
         now = datetime.now(timezone.utc)
@@ -306,21 +313,22 @@ def _log_rejection(db, decision, reason):
         logger.error(f"Failed to log rejection: {e}")
 
 
-def _save_equity_snapshot(db, cycle_number, portfolio_mgr, position_mgr):
+def _save_equity_snapshot(db, cycle_number, portfolio):
     """Save a per-cycle equity snapshot for the dashboard chart.
 
-    Recomputes paper equity from the trades table so the dashboard can
-    render an equity curve that updates every cycle, not just daily.
+    Args:
+        db: Open SQLite connection.
+        cycle_number: Current cycle number.
+        portfolio: Portfolio state dict with keys total_equity,
+            unrealized_pnl, positions, margin_used.
     """
     try:
         from config.trading_config import STARTING_CAPITAL
 
-        # Recompute current paper equity (reads from trades table)
-        paper_state = portfolio_mgr.fetch_portfolio_from_exchange(None)
-        equity = paper_state.get("total_equity", STARTING_CAPITAL)
-        unrealized = paper_state.get("unrealized_pnl", 0.0)
+        equity = portfolio.get("total_equity", STARTING_CAPITAL)
+        unrealized = portfolio.get("unrealized_pnl", 0.0)
 
-        # Realized P&L
+        # Realized P&L from closed trades
         realized_row = db.execute(
             "SELECT COALESCE(SUM(pnl), 0) AS realized FROM trades WHERE status = 'closed'"
         ).fetchone()

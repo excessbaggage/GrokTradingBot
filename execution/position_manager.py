@@ -424,7 +424,7 @@ class PositionManager:
 
         try:
             cursor = db_connection.execute(
-                "SELECT asset, side, entry_price, stop_loss, take_profit "
+                "SELECT asset, side, entry_price, stop_loss, take_profit, size_pct, leverage "
                 "FROM trades WHERE status = 'open'"
             )
             db_open_rows = cursor.fetchall()
@@ -436,7 +436,7 @@ class PositionManager:
             return
 
         for row in db_open_rows:
-            asset, side, entry_price, stop_loss, take_profit = row
+            asset, side, entry_price, stop_loss, take_profit, size_pct, leverage = row
 
             if asset in exchange_assets:
                 continue  # Still open on exchange
@@ -467,12 +467,19 @@ class PositionManager:
                 else:
                     reason = "closed_on_exchange"
 
+            # Compute dollar P&L for the pnl column
+            size_pct_f = float(size_pct or 0)
+            leverage_f = float(leverage or 1)
+            from config.trading_config import STARTING_CAPITAL
+            dollar_pnl = round(pnl * size_pct_f * STARTING_CAPITAL * leverage_f, 4)
+
             try:
                 db_connection.execute(
                     """
                     UPDATE trades
                     SET status     = 'closed',
                         exit_price = ?,
+                        pnl        = ?,
                         pnl_pct    = ?,
                         closed_at  = ?,
                         reasoning  = COALESCE(reasoning, '') || ' [closed: ' || ? || ']'
@@ -480,6 +487,7 @@ class PositionManager:
                     """,
                     (
                         mark_price,
+                        dollar_pnl,
                         round(pnl, 6),
                         datetime.now(timezone.utc).isoformat(),
                         reason,
@@ -487,11 +495,17 @@ class PositionManager:
                     ),
                 )
                 db_connection.commit()
+
+                # Clean up paper state to prevent DB/memory desync
+                if not LIVE_TRADING:
+                    self._cleanup_paper_position(asset)
+
                 logger.info(
-                    "Position auto-closed | {asset} reason={reason} pnl={pnl}%",
+                    "Position auto-closed | {asset} reason={reason} pnl={pnl}% (${dpnl})",
                     asset=asset,
                     reason=reason,
                     pnl=round(pnl * 100, 2),
+                    dpnl=dollar_pnl,
                 )
             except Exception as exc:
                 logger.error(
@@ -516,7 +530,7 @@ class PositionManager:
 
         try:
             cursor = db_connection.execute(
-                "SELECT asset, side, entry_price, opened_at "
+                "SELECT asset, side, entry_price, size_pct, leverage, opened_at "
                 "FROM trades WHERE status = 'open'"
             )
             open_rows = cursor.fetchall()
@@ -530,7 +544,7 @@ class PositionManager:
         now = datetime.now(timezone.utc)
 
         for row in open_rows:
-            asset, side, entry_price, opened_at_str = row
+            asset, side, entry_price, size_pct, leverage, opened_at_str = row
 
             if not opened_at_str:
                 continue
@@ -562,12 +576,19 @@ class PositionManager:
                     if entry_price and entry_price > 0 else 0.0
                 )
 
+            # Compute dollar P&L for the pnl column
+            size_pct_f = float(size_pct or 0)
+            leverage_f = float(leverage or 1)
+            from config.trading_config import STARTING_CAPITAL
+            dollar_pnl = round(pnl_pct * size_pct_f * STARTING_CAPITAL * leverage_f, 4)
+
             try:
                 db_connection.execute(
                     """
                     UPDATE trades
                     SET status     = 'closed',
                         exit_price = ?,
+                        pnl        = ?,
                         pnl_pct    = ?,
                         closed_at  = ?,
                         reasoning  = COALESCE(reasoning, '') || ' [closed: max_holding_period_exceeded]'
@@ -575,19 +596,26 @@ class PositionManager:
                     """,
                     (
                         mark_price,
+                        dollar_pnl,
                         round(pnl_pct, 6),
                         now.isoformat(),
                         asset,
                     ),
                 )
                 db_connection.commit()
+
+                # Clean up paper state to prevent DB/memory desync
+                if not LIVE_TRADING:
+                    self._cleanup_paper_position(asset)
+
                 logger.warning(
                     "TIME-EXIT: {asset} held {hrs:.1f}h > {max}h limit | "
-                    "pnl={pnl}% | exit_price={px}",
+                    "pnl={pnl}% (${dpnl}) | exit_price={px}",
                     asset=asset,
                     hrs=hours_held,
                     max=max_hours,
                     pnl=round(pnl_pct * 100, 2),
+                    dpnl=dollar_pnl,
                     px=mark_price,
                 )
             except Exception as exc:
@@ -595,6 +623,25 @@ class PositionManager:
                     "Failed to time-exit {asset}: {err}",
                     asset=asset, err=exc,
                 )
+
+    def _cleanup_paper_position(self, asset: str) -> None:
+        """Remove a position from paper state after it's been closed in the DB.
+
+        Prevents the desync where the DB marks a position as closed but the
+        in-memory paper state still holds it as open.
+        """
+        from execution.order_manager import _paper_state
+
+        if asset in _paper_state.positions:
+            del _paper_state.positions[asset]
+            # Cancel associated SL/TP orders
+            for oid, order in list(_paper_state.orders.items()):
+                if order.get("asset") == asset and order.get("status") == "open":
+                    _paper_state.orders[oid]["status"] = "cancelled"
+            logger.debug(
+                "Cleaned up paper state for {asset} after DB close",
+                asset=asset,
+            )
 
     # NOTE: _ensure_trades_table was removed.  The canonical schema lives in
     # data/database.py and is created by init_db() at startup.  Having a

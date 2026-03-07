@@ -77,7 +77,7 @@ class TestKillSwitch:
 
 
 class TestDailyLossLimit:
-    """When daily loss >= 5%, all opening trades must be rejected."""
+    """When daily loss >= 6%, all opening trades must be rejected."""
 
     def test_daily_loss_limit_blocks_trades(
         self,
@@ -86,7 +86,7 @@ class TestDailyLossLimit:
         daily_loss_portfolio: dict[str, Any],
         empty_db: sqlite3.Connection,
     ) -> None:
-        """Daily loss at -5% triggers rejection."""
+        """Daily loss at -6% triggers rejection."""
         result = risk_guardian.validate(
             valid_long_decision, daily_loss_portfolio, empty_db
         )
@@ -119,7 +119,7 @@ class TestDailyLossLimit:
 
 
 class TestWeeklyLossLimit:
-    """When weekly loss >= 10%, all opening trades must be rejected."""
+    """When weekly loss >= 12%, all opening trades must be rejected."""
 
     def test_weekly_loss_limit_blocks_trades(
         self,
@@ -128,7 +128,7 @@ class TestWeeklyLossLimit:
         weekly_loss_portfolio: dict[str, Any],
         empty_db: sqlite3.Connection,
     ) -> None:
-        """Weekly loss at -10% triggers rejection."""
+        """Weekly loss at -12% triggers rejection."""
         result = risk_guardian.validate(
             valid_long_decision, weekly_loss_portfolio, empty_db
         )
@@ -188,7 +188,7 @@ class TestTotalDrawdown:
 
 
 class TestPositionSizeLimit:
-    """Reject positions > 10% of portfolio."""
+    """Reject positions > 15% of portfolio."""
 
     def test_position_size_limit(
         self,
@@ -196,12 +196,11 @@ class TestPositionSizeLimit:
         healthy_portfolio: dict[str, Any],
         empty_db: sqlite3.Connection,
     ) -> None:
-        """Position size > 10% should be rejected."""
-        # Use model_construct to bypass Pydantic's le=0.10 constraint
+        """Position size > 15% should be rejected."""
         oversized = TradeDecision.model_construct(
             action="open_long",
             asset="BTC",
-            size_pct=0.15,  # 15% -- over the 10% limit
+            size_pct=0.20,  # 20% -- over the 15% limit
             leverage=2.0,
             entry_price=65000.0,
             stop_loss=63000.0,
@@ -222,11 +221,11 @@ class TestPositionSizeLimit:
         healthy_portfolio: dict[str, Any],
         empty_db: sqlite3.Connection,
     ) -> None:
-        """Position size at exactly 10% should pass (not strictly greater)."""
+        """Position size at exactly 15% should pass (not strictly greater)."""
         at_limit = TradeDecision(
             action="open_long",
             asset="BTC",
-            size_pct=0.10,
+            size_pct=0.15,
             leverage=2.0,
             entry_price=65000.0,
             stop_loss=63000.0,
@@ -247,7 +246,7 @@ class TestPositionSizeLimit:
 
 
 class TestTotalExposureLimit:
-    """Reject if total exposure would exceed 30%."""
+    """Reject if total exposure would exceed 60%."""
 
     def test_total_exposure_limit(
         self,
@@ -255,7 +254,7 @@ class TestTotalExposureLimit:
         high_exposure_portfolio: dict[str, Any],
         empty_db: sqlite3.Connection,
     ) -> None:
-        """Adding 10% to existing 25% exposure = 35% > 30% limit."""
+        """Adding 10% to existing 55% exposure = 65% > 60% limit."""
         decision = TradeDecision(
             action="open_long",
             asset="ETH",
@@ -279,10 +278,16 @@ class TestTotalExposureLimit:
     def test_exposure_within_limit_passes(
         self,
         risk_guardian: RiskGuardian,
-        high_exposure_portfolio: dict[str, Any],
         empty_db: sqlite3.Connection,
     ) -> None:
-        """Adding 5% to existing 25% = 30% exactly at limit, should pass."""
+        """Adding 5% to existing 50% = 55% under limit, should pass."""
+        portfolio: dict[str, Any] = {
+            "equity": 10_000.0,
+            "peak_equity": 10_000.0,
+            "daily_pnl_pct": 0.0,
+            "weekly_pnl_pct": 0.0,
+            "total_exposure_pct": 0.50,
+        }
         decision = TradeDecision(
             action="open_long",
             asset="ETH",
@@ -292,13 +297,13 @@ class TestTotalExposureLimit:
             stop_loss=3400.0,
             take_profit=3700.0,
             order_type="market",
-            reasoning="Just at exposure limit.",
+            reasoning="Under exposure limit.",
             conviction="high",
             risk_reward_ratio=2.0,
         )
 
         result = risk_guardian.validate(
-            decision, high_exposure_portfolio, empty_db
+            decision, portfolio, empty_db
         )
         assert result.approved is True
 
@@ -496,7 +501,7 @@ class TestTakeProfitRequired:
 
 
 class TestRiskRewardRatio:
-    """Risk/reward ratio must be >= 1.5."""
+    """Risk/reward ratio must be >= 1.2."""
 
     def test_risk_reward_ratio(
         self,
@@ -504,7 +509,7 @@ class TestRiskRewardRatio:
         healthy_portfolio: dict[str, Any],
         empty_db: sqlite3.Connection,
     ) -> None:
-        """R:R of 1.0 should be rejected (minimum is 1.5)."""
+        """R:R of 1.0 should be rejected (minimum is 1.2)."""
         bad_rr = TradeDecision(
             action="open_long",
             asset="BTC",
@@ -516,7 +521,7 @@ class TestRiskRewardRatio:
             order_type="limit",
             reasoning="Bad risk/reward.",
             conviction="medium",
-            risk_reward_ratio=1.0,  # Below 1.5 minimum
+            risk_reward_ratio=1.0,  # Below 1.2 minimum
         )
 
         result = risk_guardian.validate(bad_rr, healthy_portfolio, empty_db)
@@ -529,7 +534,7 @@ class TestRiskRewardRatio:
         healthy_portfolio: dict[str, Any],
         empty_db: sqlite3.Connection,
     ) -> None:
-        """R:R of exactly 1.5 should pass."""
+        """R:R of exactly 1.2 should pass."""
         ok_rr = TradeDecision(
             action="open_long",
             asset="BTC",
@@ -541,7 +546,7 @@ class TestRiskRewardRatio:
             order_type="limit",
             reasoning="Acceptable risk/reward.",
             conviction="medium",
-            risk_reward_ratio=1.5,
+            risk_reward_ratio=1.2,
         )
 
         result = risk_guardian.validate(ok_rr, healthy_portfolio, empty_db)
@@ -554,7 +559,7 @@ class TestRiskRewardRatio:
 
 
 class TestTimeBetweenTrades:
-    """Must wait >= 30 minutes between trades."""
+    """Must wait >= 5 minutes between trades."""
 
     def test_time_between_trades(
         self,
@@ -563,7 +568,7 @@ class TestTimeBetweenTrades:
         healthy_portfolio: dict[str, Any],
         recent_trade_db: sqlite3.Connection,
     ) -> None:
-        """Trade only 5 minutes after last trade should be rejected."""
+        """Trade only 2 minutes after last trade should be rejected."""
         result = risk_guardian.validate(
             valid_long_decision, healthy_portfolio, recent_trade_db
         )
@@ -590,7 +595,7 @@ class TestTimeBetweenTrades:
 
 
 class TestDailyTradeCount:
-    """Maximum 8 trades per day."""
+    """Maximum 50 trades per day."""
 
     def test_daily_trade_count(
         self,
@@ -599,7 +604,7 @@ class TestDailyTradeCount:
         healthy_portfolio: dict[str, Any],
         maxed_trades_db: sqlite3.Connection,
     ) -> None:
-        """With 8 trades already done today, next trade should be rejected."""
+        """With 50 trades already done today, next trade should be rejected."""
         result = risk_guardian.validate(
             valid_long_decision, healthy_portfolio, maxed_trades_db
         )

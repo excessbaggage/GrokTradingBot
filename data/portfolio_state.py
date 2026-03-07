@@ -153,6 +153,7 @@ class PortfolioManager:
         from config.trading_config import STARTING_CAPITAL
         from data.database import get_db_connection
 
+        db = None
         try:
             db = get_db_connection()
 
@@ -202,8 +203,6 @@ class PortfolioManager:
             total_equity = STARTING_CAPITAL + unrealized_pnl + realized_pnl - total_fees
             available_margin = total_equity - margin_used
 
-            db.close()
-
             logger.debug(
                 "Paper equity computed | equity={eq:.2f} unrealized={up:.2f} "
                 "realized={rp:.2f} fees={f:.2f} positions={pc}",
@@ -228,6 +227,9 @@ class PortfolioManager:
                 "positions": [],
                 "margin_used": 0.0,
             }
+        finally:
+            if db is not None:
+                db.close()
 
     # -------------------------------------------------------------------
     # Unrealized P&L
