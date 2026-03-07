@@ -59,9 +59,9 @@ class TradeHistoryManager:
             """
             INSERT INTO trades
                 (timestamp, asset, side, action, size_pct, leverage,
-                 entry_price, stop_loss, take_profit, status,
+                 entry_price, stop_loss, take_profit, fees, status,
                  reasoning, conviction, opened_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
             """,
             (
                 now,
@@ -73,6 +73,7 @@ class TradeHistoryManager:
                 float(trade_data.get("entry_price", 0)),
                 float(trade_data.get("stop_loss", 0)),
                 float(trade_data.get("take_profit", 0)),
+                float(trade_data.get("fees", 0)),
                 trade_data.get("reasoning", ""),
                 trade_data.get("conviction", ""),
                 now,

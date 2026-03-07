@@ -167,6 +167,38 @@ All 126 tests run in < 1 second with zero API calls (fully mocked).
    ```
 4. Run: `python main.py`
 
+## Web Dashboard
+
+Sentinel includes a read-only web dashboard for monitoring the bot in real time.
+
+### Start the Dashboard
+
+```bash
+# In a separate terminal (while the bot is running)
+python dashboard.py
+```
+
+Then open **http://localhost:5050** in your browser.
+
+### What You See
+
+- **Equity & P&L** — Current equity, daily/weekly P&L with percentages
+- **Equity curve** — Chart.js line chart of equity over time
+- **Risk metrics** — Exposure, open positions, loss streak, trade count, rejections
+- **Open positions** — Live table with unrealized P&L
+- **Grok analysis** — Latest market analysis, stance, and trade decisions
+- **Trade history** — Last 50 trades with entry/exit prices and P&L
+- **Risk Guardian rejections** — Trades blocked by the 13 safety checks
+
+The dashboard auto-refreshes every 30 seconds and connects to the bot's SQLite database in **read-only mode** — it cannot interfere with the bot.
+
+### Configuration
+
+| Env Variable | Default | Description |
+|-------------|---------|-------------|
+| `DASHBOARD_PORT` | `5050` | Port the dashboard runs on |
+| `DASHBOARD_HOST` | `127.0.0.1` | Host to bind to (localhost only) |
+
 ## Graceful Shutdown
 
 Press `Ctrl+C` to stop the bot. Sentinel will:
@@ -205,6 +237,7 @@ All risk parameters are defined here and enforced by the Risk Guardian. See the 
 - **AI**: xAI Grok-4 via OpenAI SDK
 - **Exchange**: Hyperliquid DEX (perpetual futures)
 - **Database**: SQLite
+- **Dashboard**: Flask + Tailwind CSS + Chart.js
 - **Validation**: Pydantic v2
 - **Logging**: Loguru
 - **Retries**: Tenacity

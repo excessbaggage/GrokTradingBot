@@ -54,16 +54,16 @@ class TradeDecision(BaseModel):
     """
     A single trade decision from the AI agent.
 
-    Every field is validated against hard constraints:
-    - size_pct capped at 10% of portfolio
-    - leverage capped at 3x
-    - stop_loss and take_profit are mandatory
-    - Only medium or high conviction trades are actionable
+    Pydantic validates structure and type bounds. The Risk Guardian in
+    execution/risk_guardian.py enforces the actual business limits
+    (max position size, max leverage, etc.). Pydantic limits here are
+    intentionally generous to avoid rejecting entire API responses when
+    Grok slightly exceeds our target ranges.
     """
 
     action: Literal["open_long", "open_short", "close", "adjust_stop", "hold", "no_trade"]
     asset: Literal["BTC", "ETH", "SOL"]
-    size_pct: float = Field(ge=0.0, le=0.10)
+    size_pct: float = Field(ge=0.0, le=1.0)  # Risk Guardian enforces actual limit
     leverage: float = Field(ge=1.0, le=3.0)
     entry_price: Optional[float] = None
     stop_loss: float

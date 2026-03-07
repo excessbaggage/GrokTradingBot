@@ -114,6 +114,16 @@ def _build_asset_section(asset: str, data: dict[str, Any]) -> str:
     summary_1d = summarize_candles(candles.get("1d"))
     summary_1h = summarize_candles(candles.get("1h"))
 
+    # Technical indicators (ATR, RSI, adaptive thresholds)
+    tech = data.get("technicals", {})
+    atr_14 = tech.get("atr_14", 0)
+    atr_pct = tech.get("atr_pct", 0)
+    rsi_14 = tech.get("rsi_14", 50)
+    adaptive_ob = tech.get("adaptive_ob", 70)
+    adaptive_os = tech.get("adaptive_os", 30)
+    vol_regime = tech.get("volatility_regime", "normal")
+    turtle_factor = tech.get("turtle_size_factor", 1.0)
+
     lines = [
         f"### {asset}-USD Perpetual",
         f"- Price: {format_usd(price)}",
@@ -124,6 +134,10 @@ def _build_asset_section(asset: str, data: dict[str, Any]) -> str:
         f"- Funding Rate (current): {funding_current:.6f}% (8h)",
         f"- Funding Rate (avg 7d): {funding_7d:.6f}%",
         f"- Open Interest: {format_usd(current_oi)} ({format_pct(oi_change / 100 if oi_change else 0)} 24h change)",
+        f"- **ATR(14)**: {format_usd(atr_14)} ({format_pct(atr_pct)} of price)",
+        f"- **RSI(14)**: {rsi_14} (adaptive OB={adaptive_ob}, OS={adaptive_os})",
+        f"- **Volatility Regime**: {vol_regime.upper()}",
+        f"- **Turtle Size Factor**: {turtle_factor:.2f}x (higher = safer to size up, lower = reduce size)",
     ]
     return "\n".join(lines)
 

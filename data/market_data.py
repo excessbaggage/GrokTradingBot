@@ -376,6 +376,110 @@ class MarketDataFetcher:
             }
 
     # -------------------------------------------------------------------
+    # TECHNICAL INDICATORS (computed from OHLCV, no extra API calls)
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def compute_technical_indicators(
+        candles_1h: pd.DataFrame,
+        candles_4h: pd.DataFrame,
+    ) -> dict[str, Any]:
+        """Compute ATR, RSI, and adaptive RSI thresholds from candle data.
+
+        Inspired by the AlphaRSIPro strategy from ai-trader:
+        - ATR (Average True Range) for volatility-based position sizing
+        - RSI with adaptive overbought/oversold thresholds that widen in
+          high-volatility environments and tighten in low-volatility ones.
+
+        Args:
+            candles_1h: 1-hour OHLCV DataFrame.
+            candles_4h: 4-hour OHLCV DataFrame.
+
+        Returns:
+            Dict with ``atr_14``, ``atr_pct``, ``rsi_14``,
+            ``adaptive_ob`` (overbought threshold),
+            ``adaptive_os`` (oversold threshold),
+            ``volatility_regime``, ``turtle_size_factor``.
+        """
+        result: dict[str, Any] = {
+            "atr_14": 0.0,
+            "atr_pct": 0.0,
+            "rsi_14": 50.0,
+            "adaptive_ob": 70.0,
+            "adaptive_os": 30.0,
+            "volatility_regime": "normal",
+            "turtle_size_factor": 1.0,
+        }
+
+        # --- ATR-14 from 1h candles ---
+        if candles_1h is not None and len(candles_1h) >= 15:
+            df = candles_1h.copy()
+            high = df["high"]
+            low = df["low"]
+            close = df["close"]
+
+            # True Range
+            prev_close = close.shift(1)
+            tr = pd.concat([
+                (high - low),
+                (high - prev_close).abs(),
+                (low - prev_close).abs(),
+            ], axis=1).max(axis=1)
+
+            atr_14 = tr.rolling(14).mean().iloc[-1]
+            latest_close = close.iloc[-1]
+
+            if pd.notna(atr_14) and latest_close > 0:
+                result["atr_14"] = round(float(atr_14), 4)
+                result["atr_pct"] = round(float(atr_14 / latest_close), 6)
+
+                # Volatility ratio = ATR(14) / SMA(ATR(14), 50)
+                # (ai-trader AlphaRSIPro pattern)
+                atr_series = tr.rolling(14).mean()
+                atr_sma_50 = atr_series.rolling(min(50, len(atr_series))).mean().iloc[-1]
+
+                if pd.notna(atr_sma_50) and atr_sma_50 > 0:
+                    vol_ratio = float(atr_14 / atr_sma_50)
+                    adjustment = (vol_ratio - 1) * 20  # Scale factor from ai-trader
+
+                    # Adaptive RSI thresholds
+                    result["adaptive_ob"] = round(min(70 + adjustment, 85), 1)
+                    result["adaptive_os"] = round(max(30 - adjustment, 15), 1)
+
+                    if vol_ratio > 1.3:
+                        result["volatility_regime"] = "high"
+                    elif vol_ratio < 0.7:
+                        result["volatility_regime"] = "low"
+                    else:
+                        result["volatility_regime"] = "normal"
+
+                # Turtle position sizing factor: 1 / (ATR_pct * 100)
+                # Higher ATR = smaller suggested position
+                atr_pct = result["atr_pct"]
+                if atr_pct > 0:
+                    result["turtle_size_factor"] = round(
+                        min(0.01 / atr_pct, 3.0), 2  # Cap at 3x
+                    )
+
+        # --- RSI-14 from 1h candles ---
+        if candles_1h is not None and len(candles_1h) >= 15:
+            close = candles_1h["close"]
+            delta = close.diff()
+            gain = delta.clip(lower=0)
+            loss = (-delta.clip(upper=0))
+
+            avg_gain = gain.rolling(14).mean().iloc[-1]
+            avg_loss = loss.rolling(14).mean().iloc[-1]
+
+            if pd.notna(avg_gain) and pd.notna(avg_loss) and avg_loss > 0:
+                rs = avg_gain / avg_loss
+                result["rsi_14"] = round(100 - (100 / (1 + rs)), 1)
+            elif pd.notna(avg_gain) and (pd.isna(avg_loss) or avg_loss == 0):
+                result["rsi_14"] = 100.0  # All gains, no losses
+
+        return result
+
+    # -------------------------------------------------------------------
     # AGGREGATE: all data for multiple assets
     # -------------------------------------------------------------------
 
@@ -449,6 +553,12 @@ class MarketDataFetcher:
 
             # -- Order book
             asset_data["order_book"] = self.fetch_order_book(asset, depth=10)
+
+            # -- Technical indicators (ATR, RSI, adaptive thresholds)
+            asset_data["technicals"] = self.compute_technical_indicators(
+                candles_1h=asset_data["candles"].get("1h"),
+                candles_4h=asset_data["candles"].get("4h"),
+            )
 
             result[asset] = asset_data
 

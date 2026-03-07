@@ -60,18 +60,8 @@ class PortfolioManager:
             address = wallet_address or HYPERLIQUID_WALLET_ADDRESS
             if not address:
                 if not LIVE_TRADING:
-                    # Paper mode — use simulated equity from STARTING_CAPITAL
-                    logger.debug(
-                        "Paper mode: using STARTING_CAPITAL={cap} as equity",
-                        cap=STARTING_CAPITAL,
-                    )
-                    return {
-                        "total_equity": STARTING_CAPITAL,
-                        "available_margin": STARTING_CAPITAL,
-                        "unrealized_pnl": 0.0,
-                        "positions": [],
-                        "margin_used": 0.0,
-                    }
+                    # Paper mode — compute equity from trades table
+                    return self._compute_paper_equity()
                 logger.error("No wallet address configured for portfolio fetch")
                 return {
                     "total_equity": 0.0,
@@ -140,6 +130,100 @@ class PortfolioManager:
             return {
                 "total_equity": 0.0,
                 "available_margin": 0.0,
+                "unrealized_pnl": 0.0,
+                "positions": [],
+                "margin_used": 0.0,
+            }
+
+    # -------------------------------------------------------------------
+    # Paper mode equity computation
+    # -------------------------------------------------------------------
+
+    def _compute_paper_equity(self) -> dict[str, Any]:
+        """Compute portfolio state from trades table in paper mode.
+
+        Sums unrealized P&L from all open trades (using pnl_pct updated
+        by PositionManager.manage_open_positions) and realized P&L from
+        all closed trades.  This gives the dashboard and Grok an accurate
+        view of the simulated equity rather than a static starting capital.
+
+        Returns:
+            Dict matching the same schema as fetch_portfolio_from_exchange.
+        """
+        from config.trading_config import STARTING_CAPITAL
+        from data.database import get_db_connection
+
+        try:
+            db = get_db_connection()
+
+            # Unrealized P&L from open trades:
+            #   Each trade's $ impact = pnl_pct * size_pct * STARTING_CAPITAL * leverage
+            open_rows = db.execute(
+                """SELECT asset, side, size_pct, leverage, entry_price,
+                          stop_loss, take_profit, pnl_pct
+                   FROM trades WHERE status = 'open'"""
+            ).fetchall()
+
+            unrealized_pnl = 0.0
+            margin_used = 0.0
+            positions: list[dict[str, Any]] = []
+
+            for row in open_rows:
+                pnl_pct = float(row["pnl_pct"] or 0.0)
+                size_pct = float(row["size_pct"])
+                leverage = float(row["leverage"])
+                trade_unrealized = pnl_pct * size_pct * STARTING_CAPITAL * leverage
+                unrealized_pnl += trade_unrealized
+                trade_margin = size_pct * STARTING_CAPITAL
+                margin_used += trade_margin
+                positions.append({
+                    "asset": row["asset"],
+                    "side": row["side"],
+                    "size": size_pct,
+                    "entry_price": float(row["entry_price"] or 0),
+                    "unrealized_pnl": trade_unrealized,
+                    "leverage": leverage,
+                    "liquidation_price": 0.0,
+                    "margin_used": trade_margin,
+                })
+
+            # Realized P&L from closed trades
+            realized_row = db.execute(
+                "SELECT COALESCE(SUM(pnl), 0) AS realized FROM trades WHERE status = 'closed'"
+            ).fetchone()
+            realized_pnl = float(realized_row["realized"]) if realized_row else 0.0
+
+            # Total fees
+            fee_row = db.execute(
+                "SELECT COALESCE(SUM(fees), 0) AS total_fees FROM trades"
+            ).fetchone()
+            total_fees = float(fee_row["total_fees"]) if fee_row else 0.0
+
+            total_equity = STARTING_CAPITAL + unrealized_pnl + realized_pnl - total_fees
+            available_margin = total_equity - margin_used
+
+            db.close()
+
+            logger.debug(
+                "Paper equity computed | equity={eq:.2f} unrealized={up:.2f} "
+                "realized={rp:.2f} fees={f:.2f} positions={pc}",
+                eq=total_equity, up=unrealized_pnl, rp=realized_pnl,
+                f=total_fees, pc=len(positions),
+            )
+            return {
+                "total_equity": total_equity,
+                "available_margin": available_margin,
+                "unrealized_pnl": unrealized_pnl,
+                "positions": positions,
+                "margin_used": margin_used,
+            }
+
+        except Exception as exc:
+            logger.error("Paper equity computation failed: {err}", err=exc)
+            from config.trading_config import STARTING_CAPITAL as SC
+            return {
+                "total_equity": SC,
+                "available_margin": SC,
                 "unrealized_pnl": 0.0,
                 "positions": [],
                 "margin_used": 0.0,
@@ -281,7 +365,10 @@ class PortfolioManager:
         )
         streak = 0
         for row in rows:
-            if float(row["pnl"]) < 0:
+            pnl = row["pnl"]
+            if pnl is None:
+                continue  # Skip trades closed by sync with no dollar P&L
+            if float(pnl) < 0:
                 streak += 1
             else:
                 break

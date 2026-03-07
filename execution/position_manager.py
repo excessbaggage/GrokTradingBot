@@ -24,6 +24,7 @@ from config.trading_config import (
     HYPERLIQUID_WALLET_ADDRESS,
     LIVE_TRADING,
 )
+from config.risk_config import RISK_PARAMS
 from execution.order_manager import OrderManager
 
 
@@ -140,6 +141,11 @@ class PositionManager:
         # Check for positions that were closed on the exchange
         # (e.g. stop-loss hit) but still show as open in the DB.
         self._detect_closed_positions(positions, db_connection)
+
+        # Check for stale positions exceeding max holding period
+        # (ai-trader OR-logic pattern: close if held > N hours)
+        if RISK_PARAMS.get("stale_position_check", True):
+            self._check_holding_period(db_connection)
 
         logger.debug(
             "Position check complete | {n} open positions",
@@ -490,6 +496,103 @@ class PositionManager:
             except Exception as exc:
                 logger.error(
                     "Failed to mark {asset} as closed: {err}",
+                    asset=asset, err=exc,
+                )
+
+    def _check_holding_period(
+        self,
+        db_connection: sqlite3.Connection,
+    ) -> None:
+        """Force-close positions that exceed the maximum holding period.
+
+        Uses the OR-logic pattern from ai-trader: a position is closed if
+        ``held > max_holding_period_hours``, regardless of P&L.  This
+        prevents overnight exposure and stale positions from accumulating.
+
+        Args:
+            db_connection: Active SQLite connection.
+        """
+        max_hours = RISK_PARAMS.get("max_holding_period_hours", 8)
+
+        try:
+            cursor = db_connection.execute(
+                "SELECT asset, side, entry_price, opened_at "
+                "FROM trades WHERE status = 'open'"
+            )
+            open_rows = cursor.fetchall()
+        except Exception as exc:
+            logger.error(
+                "Failed to query trades for holding period check: {err}",
+                err=exc,
+            )
+            return
+
+        now = datetime.now(timezone.utc)
+
+        for row in open_rows:
+            asset, side, entry_price, opened_at_str = row
+
+            if not opened_at_str:
+                continue
+
+            # Parse the opened_at timestamp
+            try:
+                opened_at = datetime.fromisoformat(opened_at_str)
+                if opened_at.tzinfo is None:
+                    opened_at = opened_at.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                continue
+
+            hours_held = (now - opened_at).total_seconds() / 3600
+
+            if hours_held < max_hours:
+                continue
+
+            # Position exceeded max holding period — force close
+            mark_price = self._get_mark_price(asset) or 0.0
+
+            if side == "long":
+                pnl_pct = (
+                    (mark_price - entry_price) / entry_price
+                    if entry_price and entry_price > 0 else 0.0
+                )
+            else:
+                pnl_pct = (
+                    (entry_price - mark_price) / entry_price
+                    if entry_price and entry_price > 0 else 0.0
+                )
+
+            try:
+                db_connection.execute(
+                    """
+                    UPDATE trades
+                    SET status     = 'closed',
+                        exit_price = ?,
+                        pnl_pct    = ?,
+                        closed_at  = ?,
+                        reasoning  = COALESCE(reasoning, '') || ' [closed: max_holding_period_exceeded]'
+                    WHERE asset = ? AND status = 'open'
+                    """,
+                    (
+                        mark_price,
+                        round(pnl_pct, 6),
+                        now.isoformat(),
+                        asset,
+                    ),
+                )
+                db_connection.commit()
+                logger.warning(
+                    "TIME-EXIT: {asset} held {hrs:.1f}h > {max}h limit | "
+                    "pnl={pnl}% | exit_price={px}",
+                    asset=asset,
+                    hrs=hours_held,
+                    max=max_hours,
+                    pnl=round(pnl_pct * 100, 2),
+                    px=mark_price,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to time-exit {asset}: {err}",
                     asset=asset, err=exc,
                 )
 

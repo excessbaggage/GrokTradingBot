@@ -9,3 +9,4 @@ requests>=2.31.0
 loguru>=0.7.0
 pydantic>=2.0.0
 tenacity>=8.2.0
+flask>=3.0.0

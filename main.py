@@ -27,6 +27,7 @@ from config.trading_config import (
     LIVE_TRADING,
     CYCLE_INTERVAL_MINUTES,
     MIN_CYCLE_INTERVAL_MINUTES,
+    MAX_CYCLE_INTERVAL_MINUTES,
     ASSET_UNIVERSE,
     GROK_MODEL,
     DISCORD_WEBHOOK_URL,
@@ -211,6 +212,7 @@ def run_cycle(
                             "take_profit": decision.take_profit,
                             "reasoning": decision.reasoning,
                             "conviction": decision.conviction,
+                            "fees": order_result.get("fees", 0.0),
                         }
                         trade_history.log_trade(db, trade_data)
                         notifier.send_trade_alert(decision, order_result)
@@ -227,6 +229,9 @@ def run_cycle(
         # --- Step 11: Manage existing positions ---
         position_mgr.manage_open_positions(db)
 
+        # --- Step 11b: Save equity snapshot for dashboard chart ---
+        _save_equity_snapshot(db, cycle_number, portfolio_mgr, position_mgr)
+
         # --- Step 12: Daily summary ---
         now = datetime.now(timezone.utc)
         if now.hour == DAILY_SUMMARY_HOUR_UTC and now.minute < CYCLE_INTERVAL_MINUTES:
@@ -235,7 +240,9 @@ def run_cycle(
 
         # --- Step 13: Determine next cycle timing ---
         suggested = grok_response.next_review_suggestion_minutes
-        next_cycle = max(suggested, MIN_CYCLE_INTERVAL_MINUTES)
+        next_cycle = max(min(suggested, MAX_CYCLE_INTERVAL_MINUTES), MIN_CYCLE_INTERVAL_MINUTES)
+        if suggested != next_cycle:
+            logger.info(f"Grok suggested {suggested} min, clamped to {next_cycle} min")
         logger.info(f"=== CYCLE {cycle_number} COMPLETE === Next in {next_cycle} min")
         return next_cycle
 
@@ -297,6 +304,57 @@ def _log_rejection(db, decision, reason):
         db.commit()
     except Exception as e:
         logger.error(f"Failed to log rejection: {e}")
+
+
+def _save_equity_snapshot(db, cycle_number, portfolio_mgr, position_mgr):
+    """Save a per-cycle equity snapshot for the dashboard chart.
+
+    Recomputes paper equity from the trades table so the dashboard can
+    render an equity curve that updates every cycle, not just daily.
+    """
+    try:
+        from config.trading_config import STARTING_CAPITAL
+
+        # Recompute current paper equity (reads from trades table)
+        paper_state = portfolio_mgr.fetch_portfolio_from_exchange(None)
+        equity = paper_state.get("total_equity", STARTING_CAPITAL)
+        unrealized = paper_state.get("unrealized_pnl", 0.0)
+
+        # Realized P&L
+        realized_row = db.execute(
+            "SELECT COALESCE(SUM(pnl), 0) AS realized FROM trades WHERE status = 'closed'"
+        ).fetchone()
+        realized = float(realized_row["realized"]) if realized_row else 0.0
+
+        # Open position count and exposure
+        open_count_row = db.execute(
+            "SELECT COUNT(*) AS cnt, COALESCE(SUM(size_pct), 0) AS exp FROM trades WHERE status = 'open'"
+        ).fetchone()
+        open_positions = int(open_count_row["cnt"]) if open_count_row else 0
+        total_exposure = float(open_count_row["exp"]) if open_count_row else 0.0
+
+        db.execute(
+            """INSERT INTO equity_snapshots
+               (timestamp, cycle_number, equity, unrealized_pnl, realized_pnl,
+                open_positions, total_exposure)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.now(timezone.utc).isoformat(),
+                cycle_number,
+                round(equity, 2),
+                round(unrealized, 4),
+                round(realized, 4),
+                open_positions,
+                round(total_exposure, 4),
+            ),
+        )
+        db.commit()
+        logger.info(
+            "Equity snapshot saved | cycle={c} equity=${eq:.2f} unrealized=${u:.2f}",
+            c=cycle_number, eq=equity, u=unrealized,
+        )
+    except Exception as e:
+        logger.error(f"Failed to save equity snapshot: {e}")
 
 
 def _generate_daily_summary(db, portfolio) -> dict:

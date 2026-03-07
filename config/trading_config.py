@@ -28,12 +28,13 @@ LIVE_TRADING = os.getenv("LIVE_TRADING", "False").lower() == "true"
 STARTING_CAPITAL = float(os.getenv("STARTING_CAPITAL", "10000"))
 CYCLE_INTERVAL_MINUTES = int(os.getenv("CYCLE_INTERVAL_MINUTES", "15"))
 MIN_CYCLE_INTERVAL_MINUTES = 5  # Absolute minimum between cycles
+MAX_CYCLE_INTERVAL_MINUTES = int(os.getenv("MAX_CYCLE_INTERVAL_MINUTES", "15"))  # Cap for active trading
 
 # === Grok Model ===
 GROK_MODEL = os.getenv("GROK_MODEL", "grok-4")
 XAI_BASE_URL = "https://api.x.ai/v1"
 GROK_MAX_TOKENS = 4096
-GROK_TEMPERATURE = 0.3  # Low temperature for more deterministic trading decisions
+GROK_TEMPERATURE = 0.5  # Moderate temperature for varied trade ideas (was 0.3 in conservative mode)
 
 # === Asset Universe ===
 ASSET_UNIVERSE = ["BTC", "ETH", "SOL"]

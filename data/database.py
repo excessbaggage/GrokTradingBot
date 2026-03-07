@@ -104,6 +104,20 @@ CREATE TABLE IF NOT EXISTS rejections (
 );
 
 -- -----------------------------------------------------------------------
+-- equity_snapshots: per-cycle equity tracking for chart rendering
+-- -----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS equity_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp       TEXT    NOT NULL DEFAULT (datetime('now')),
+    cycle_number    INTEGER NOT NULL,
+    equity          REAL    NOT NULL,
+    unrealized_pnl  REAL    DEFAULT 0.0,
+    realized_pnl    REAL    DEFAULT 0.0,
+    open_positions  INTEGER DEFAULT 0,
+    total_exposure  REAL    DEFAULT 0.0
+);
+
+-- -----------------------------------------------------------------------
 -- Indexes for common queries
 -- -----------------------------------------------------------------------
 CREATE INDEX IF NOT EXISTS idx_trades_status     ON trades(status);
@@ -114,6 +128,7 @@ CREATE INDEX IF NOT EXISTS idx_positions_status  ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_positions_asset   ON positions(asset);
 CREATE INDEX IF NOT EXISTS idx_grok_logs_cycle   ON grok_logs(cycle_number);
 CREATE INDEX IF NOT EXISTS idx_rejections_ts     ON rejections(timestamp);
+CREATE INDEX IF NOT EXISTS idx_equity_snap_ts    ON equity_snapshots(timestamp);
 """
 
 

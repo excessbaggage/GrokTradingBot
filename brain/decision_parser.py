@@ -168,6 +168,40 @@ class DecisionParser:
             )
             return None
 
+    def _normalize_decisions(self, data: dict) -> dict:
+        """Normalize decision values before Pydantic validation.
+
+        Grok sometimes returns size_pct as a percentage (e.g. 8.0 for 8%)
+        instead of a decimal fraction (0.08). This method detects and fixes
+        that, as well as other common AI formatting issues.
+
+        Args:
+            data: The parsed JSON dictionary.
+
+        Returns:
+            The same dictionary with normalized decision values.
+        """
+        decisions = data.get("decisions", [])
+        for d in decisions:
+            if not isinstance(d, dict):
+                continue
+
+            # Fix size_pct: if > 1.0, Grok likely returned a percentage
+            size_pct = d.get("size_pct")
+            if isinstance(size_pct, (int, float)) and size_pct > 1.0:
+                d["size_pct"] = size_pct / 100.0
+                logger.debug(
+                    "Normalized size_pct: {} -> {}",
+                    size_pct, d["size_pct"],
+                )
+
+            # Fix risk_reward_ratio: ensure non-negative
+            rr = d.get("risk_reward_ratio")
+            if isinstance(rr, (int, float)) and rr < 0:
+                d["risk_reward_ratio"] = abs(rr)
+
+        return data
+
     def _validate_model(self, data: dict) -> Optional[GrokResponse]:
         """Validate a parsed dict against the ``GrokResponse`` Pydantic model.
 
@@ -177,6 +211,9 @@ class DecisionParser:
         Returns:
             A validated ``GrokResponse``, or ``None`` if validation failed.
         """
+        # Normalize before validation to fix common Grok formatting issues
+        data = self._normalize_decisions(data)
+
         try:
             response = GrokResponse.model_validate(data)
             logger.info(
