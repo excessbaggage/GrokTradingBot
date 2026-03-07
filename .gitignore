@@ -1,0 +1,40 @@
+# Environment / Secrets
+.env
+config/.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+venv/
+.venv/
+.pytest_cache/
+
+# Database (keep the directory, ignore contents)
+db/*.db
+db/*.sqlite
+db/*.sqlite3
+
+# Logs (keep the directory, ignore contents)
+logs/*.log
+logs/*.json
+logs/*.jsonl
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
