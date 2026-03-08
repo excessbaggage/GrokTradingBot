@@ -31,6 +31,7 @@ class AssetAnalysis(BaseModel):
     key_levels: KeyLevels
     sentiment_read: str
     funding_rate_signal: str
+    entry_conditions_met: Optional[int] = None  # 0-5 N-of-M conditions met
     summary: str
 
 
@@ -117,7 +118,7 @@ class TradeDecision(BaseModel):
         """Validate asset is in the configured ASSET_UNIVERSE."""
         from config.trading_config import ASSET_UNIVERSE
 
-        v_upper = v.upper()
+        v_upper = v.strip().upper()
         if v_upper not in ASSET_UNIVERSE:
             raise ValueError(
                 f"Asset '{v}' not in ASSET_UNIVERSE: {ASSET_UNIVERSE}"

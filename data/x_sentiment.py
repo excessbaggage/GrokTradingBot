@@ -17,6 +17,7 @@ Features:
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -198,7 +199,7 @@ class XSentimentFetcher:
         ),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
-        before_sleep=before_sleep_log(logger, "WARNING"),  # type: ignore[arg-type]
+        before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
         reraise=True,
     )
     def _fetch_with_retry(
@@ -240,7 +241,15 @@ class XSentimentFetcher:
             temperature=0.3,  # Low temp for consistent structured output
         )
 
+        if not response.choices:
+            logger.warning("xAI API returned empty choices list")
+            return {}
+
         raw_text = response.choices[0].message.content or ""
+
+        if not raw_text and hasattr(response.choices[0].message, "tool_calls") and response.choices[0].message.tool_calls:
+            logger.warning("Model issued tool_calls but no final content — x_search may need server-side execution")
+            return {}
 
         if response.usage:
             logger.debug(
@@ -306,21 +315,29 @@ class XSentimentFetcher:
             if not isinstance(asset_info, dict) or not asset_info:
                 continue
 
-            result[asset] = SentimentData(
-                score=_clamp(float(asset_info.get("score", 0.0)), -1.0, 1.0),
-                momentum=_validate_enum(
-                    asset_info.get("momentum", "neutral"),
-                    {"bullish", "bearish", "neutral"},
-                    "neutral",
-                ),
-                volume=_validate_enum(
-                    asset_info.get("volume", "normal"),
-                    {"high", "normal", "low"},
-                    "normal",
-                ),
-                key_topics=asset_info.get("key_topics", [])[:5],
-                raw_summary=str(asset_info.get("raw_summary", ""))[:500],
-            )
+            try:
+                result[asset] = SentimentData(
+                    score=_clamp(float(asset_info.get("score", 0.0)), -1.0, 1.0),
+                    momentum=_validate_enum(
+                        asset_info.get("momentum", "neutral"),
+                        {"bullish", "bearish", "neutral"},
+                        "neutral",
+                    ),
+                    volume=_validate_enum(
+                        asset_info.get("volume", "normal"),
+                        {"high", "normal", "low"},
+                        "normal",
+                    ),
+                    key_topics=asset_info.get("key_topics", [])[:5],
+                    raw_summary=str(asset_info.get("raw_summary", ""))[:500],
+                )
+            except (ValueError, TypeError) as exc:
+                logger.warning(
+                    "Failed to parse sentiment for {asset}: {err}",
+                    asset=asset,
+                    err=exc,
+                )
+                continue
 
         return result
 

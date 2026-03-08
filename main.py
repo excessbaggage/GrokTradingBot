@@ -108,6 +108,7 @@ def run_cycle(
     position_mgr: PositionManager,
     decision_parser: DecisionParser,
     notifier: Notifier,
+    sentiment_fetcher: "XSentimentFetcher | None" = None,
 ) -> int:
     """
     Execute one full trading cycle.
@@ -185,10 +186,8 @@ def run_cycle(
 
         # --- Step 4e: Fetch X sentiment ---
         sentiment_data = {}
-        if X_SENTIMENT_ENABLED:
+        if sentiment_fetcher is not None:
             try:
-                from data.x_sentiment import XSentimentFetcher
-                sentiment_fetcher = XSentimentFetcher(api_key=XAI_API_KEY)
                 sentiment_data = sentiment_fetcher.fetch_sentiment(
                     list(market_data.keys())
                 )
@@ -494,6 +493,15 @@ def main():
         telegram_chat_id=TELEGRAM_CHAT_ID,
     )
 
+    # Initialize X sentiment fetcher (persists across cycles for caching)
+    sentiment_fetcher = None
+    if X_SENTIMENT_ENABLED:
+        try:
+            from data.x_sentiment import XSentimentFetcher
+            sentiment_fetcher = XSentimentFetcher(api_key=XAI_API_KEY)
+        except Exception as e:
+            logger.warning(f"X sentiment initialization failed: {e}")
+
     # Verify Grok API connectivity
     if grok.health_check():
         logger.info("Grok API connection verified.")
@@ -541,6 +549,7 @@ def main():
             position_mgr=position_mgr,
             decision_parser=decision_parser,
             notifier=notifier,
+            sentiment_fetcher=sentiment_fetcher,
         )
 
         if _shutdown_requested:

@@ -464,3 +464,192 @@ class TestContextBuilderIntegration:
 
         assert "X Sentiment Score" not in context
         assert "BTC-USD Perpetual" in context  # Still renders normal data
+
+    def test_empty_dict_sentiment_renders_clean(self) -> None:
+        """Context builder should handle empty dict (all fetches failed) correctly."""
+        from data.context_builder import build_context_prompt
+
+        market_data = {
+            "BTC": {
+                "price": 65000.0,
+                "24h_change_pct": 0.02,
+                "candles": {"1h": None, "4h": None, "1d": None},
+                "funding": {"current_rate": 0.0001, "avg_7d_rate": 0.00008},
+                "oi": {"current_oi": 5_000_000_000, "oi_24h_change_pct": 2.5},
+            }
+        }
+        portfolio = {
+            "total_equity": 10000,
+            "available_margin": 9000,
+            "unrealized_pnl": 0,
+            "positions": [],
+        }
+        risk_status = {
+            "daily_pnl": 0,
+            "weekly_pnl": 0,
+            "drawdown_from_peak": 0,
+            "trades_today": 0,
+            "consecutive_losses": 0,
+        }
+
+        # Pass empty dict (not None) — simulates all sentiment fetches failing
+        context = build_context_prompt(
+            market_data=market_data,
+            portfolio=portfolio,
+            recent_trades=[],
+            risk_status=risk_status,
+            sentiment_data={},
+        )
+
+        assert "X Sentiment Score" not in context
+        assert "BTC-USD Perpetual" in context
+
+    def test_negative_sentiment_renders_correctly(self) -> None:
+        """Negative sentiment scores should render with minus sign."""
+        from data.context_builder import build_context_prompt
+
+        market_data = {
+            "BTC": {
+                "price": 65000.0,
+                "24h_change_pct": -0.05,
+                "candles": {"1h": None, "4h": None, "1d": None},
+                "funding": {"current_rate": 0.0001, "avg_7d_rate": 0.00008},
+                "oi": {"current_oi": 5_000_000_000, "oi_24h_change_pct": 2.5},
+            }
+        }
+        portfolio = {
+            "total_equity": 10000,
+            "available_margin": 9000,
+            "unrealized_pnl": 0,
+            "positions": [],
+        }
+        risk_status = {
+            "daily_pnl": 0,
+            "weekly_pnl": 0,
+            "drawdown_from_peak": 0,
+            "trades_today": 0,
+            "consecutive_losses": 0,
+        }
+        sentiment = {
+            "BTC": SentimentData(
+                score=-0.45,
+                momentum="bearish",
+                volume="low",
+                key_topics=["whale dump"],
+                raw_summary="Bearish.",
+            )
+        }
+
+        context = build_context_prompt(
+            market_data=market_data,
+            portfolio=portfolio,
+            recent_trades=[],
+            risk_status=risk_status,
+            sentiment_data=sentiment,
+        )
+
+        assert "-0.45" in context
+        assert "BEARISH" in context
+        assert "LOW" in context
+
+
+# ======================================================================
+# Additional edge case tests
+# ======================================================================
+
+
+class TestSentimentEdgeCases:
+    """Additional edge cases found during code review."""
+
+    @patch("data.x_sentiment.OpenAI")
+    def test_non_numeric_score_isolates_failure(
+        self, mock_openai_cls, mock_openai_response
+    ) -> None:
+        """Non-numeric score on one asset should not poison other assets."""
+        bad_data = json.dumps({
+            "assets": {
+                "BTC": {"score": "very_bullish", "momentum": "bullish", "volume": "high"},
+                "ETH": {"score": 0.3, "momentum": "neutral", "volume": "normal"},
+            }
+        })
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_openai_response(bad_data)
+        mock_openai_cls.return_value = mock_client
+
+        fetcher = XSentimentFetcher(api_key="test-key")
+        result = fetcher.fetch_sentiment(["BTC", "ETH"])
+
+        # BTC should fail (non-numeric score), but ETH should still parse
+        assert "BTC" not in result
+        assert "ETH" in result
+        assert result["ETH"].score == 0.3
+
+    @patch("data.x_sentiment.OpenAI")
+    def test_unwrapped_json_format(
+        self, mock_openai_cls, mock_openai_response
+    ) -> None:
+        """JSON without 'assets' wrapper should still parse."""
+        unwrapped = json.dumps({
+            "BTC": {"score": 0.5, "momentum": "bullish", "volume": "high"},
+        })
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_openai_response(unwrapped)
+        mock_openai_cls.return_value = mock_client
+
+        fetcher = XSentimentFetcher(api_key="test-key")
+        result = fetcher.fetch_sentiment(["BTC"])
+
+        assert "BTC" in result
+        assert result["BTC"].score == 0.5
+
+    @patch("data.x_sentiment.OpenAI")
+    def test_empty_choices_returns_empty(self, mock_openai_cls) -> None:
+        """API response with empty choices list should return empty dict."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = []  # Empty choices
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_openai_cls.return_value = mock_client
+
+        fetcher = XSentimentFetcher(api_key="test-key")
+        result = fetcher.fetch_sentiment(["BTC"])
+        assert result == {}
+
+    @patch("data.x_sentiment.OpenAI")
+    def test_none_content_with_tool_calls(self, mock_openai_cls) -> None:
+        """Response with tool_calls but no content should return empty dict."""
+        mock_client = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = None
+        mock_choice.message.tool_calls = [MagicMock()]  # Has tool calls
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_openai_cls.return_value = mock_client
+
+        fetcher = XSentimentFetcher(api_key="test-key")
+        result = fetcher.fetch_sentiment(["BTC"])
+        assert result == {}
+
+    @patch("data.x_sentiment.OpenAI")
+    def test_raw_summary_truncated(self, mock_openai_cls, mock_openai_response) -> None:
+        """Raw summary longer than 500 chars should be truncated."""
+        long_summary = "A" * 600
+        data = json.dumps({
+            "assets": {
+                "BTC": {
+                    "score": 0.5,
+                    "momentum": "bullish",
+                    "volume": "high",
+                    "raw_summary": long_summary,
+                },
+            }
+        })
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_openai_response(data)
+        mock_openai_cls.return_value = mock_client
+
+        fetcher = XSentimentFetcher(api_key="test-key")
+        result = fetcher.fetch_sentiment(["BTC"])
+
+        assert len(result["BTC"].raw_summary) == 500

@@ -82,7 +82,7 @@ def build_context_prompt(
                 regime_data.get(asset) if regime_data else None
             )
             asset_sentiment = (
-                sentiment_data.get(asset) if sentiment_data else None
+                sentiment_data.get(asset) if sentiment_data is not None else None
             )
             sections.append(
                 _build_asset_section(
