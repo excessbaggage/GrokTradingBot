@@ -22,6 +22,9 @@ db/*.db-shm
 db/*.db-wal
 db/*.sqlite
 db/*.sqlite3
+*.db
+*.db-shm
+*.db-wal
 
 # Logs (keep the directory, ignore contents)
 logs/*.log
