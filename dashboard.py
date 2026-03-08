@@ -1156,10 +1156,10 @@ DASHBOARD_HTML = """
     }
 
     const EVENT_ICONS = {
-        cycle_start: '\u{1F504}', cycle_end: '\u{2705}',
-        trade_opened: '\u{1F4C8}', trade_closed: '\u{1F4C9}',
-        trade_rejected: '\u{1F6AB}', sentiment_fetched: '\u{1F4F0}',
-        grok_decision: '\u{1F9E0}', error: '\u{26A0}\u{FE0F}'
+        cycle_start: String.fromCodePoint(0x1F504), cycle_end: String.fromCodePoint(0x2705),
+        trade_opened: String.fromCodePoint(0x1F4C8), trade_closed: String.fromCodePoint(0x1F4C9),
+        trade_rejected: String.fromCodePoint(0x1F6AB), sentiment_fetched: String.fromCodePoint(0x1F4F0),
+        grok_decision: String.fromCodePoint(0x1F9E0), error: String.fromCodePoint(0x26A0, 0xFE0F)
     };
     const SEVERITY_BORDER = {
         info: 'border-l-blue-500', success: 'border-l-green-500',
@@ -1188,7 +1188,7 @@ DASHBOARD_HTML = """
 
             const icon = document.createElement('span');
             icon.className = 'text-sm mt-0.5';
-            icon.textContent = EVENT_ICONS[ev.event_type] || '\u{25CF}';
+            icon.textContent = EVENT_ICONS[ev.event_type] || String.fromCodePoint(0x25CF);
 
             const body = document.createElement('div');
             body.className = 'flex-1 min-w-0';
