@@ -83,7 +83,8 @@ def _insert_trade(
 @pytest.fixture
 def empty_db() -> sqlite3.Connection:
     """An in-memory SQLite DB with the trades table but no rows."""
-    conn = sqlite3.connect(":memory:")
+    conn = sqlite3.connect(":memory:", isolation_level=None)
+    conn.row_factory = sqlite3.Row
     _create_trades_table(conn)
     yield conn
     conn.close()
@@ -92,7 +93,8 @@ def empty_db() -> sqlite3.Connection:
 @pytest.fixture
 def recent_trade_db() -> sqlite3.Connection:
     """DB with one trade opened 2 minutes ago (too recent for 5-min gap)."""
-    conn = sqlite3.connect(":memory:")
+    conn = sqlite3.connect(":memory:", isolation_level=None)
+    conn.row_factory = sqlite3.Row
     _create_trades_table(conn)
     two_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
     _insert_trade(conn, asset="BTC", opened_at=two_min_ago)
@@ -103,7 +105,8 @@ def recent_trade_db() -> sqlite3.Connection:
 @pytest.fixture
 def old_trade_db() -> sqlite3.Connection:
     """DB with one trade opened 2 hours ago (well within time limits)."""
-    conn = sqlite3.connect(":memory:")
+    conn = sqlite3.connect(":memory:", isolation_level=None)
+    conn.row_factory = sqlite3.Row
     _create_trades_table(conn)
     two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     _insert_trade(conn, asset="BTC", opened_at=two_hours_ago)
@@ -114,12 +117,14 @@ def old_trade_db() -> sqlite3.Connection:
 @pytest.fixture
 def maxed_trades_db() -> sqlite3.Connection:
     """DB with 50 trades today (at the daily limit of 50)."""
-    conn = sqlite3.connect(":memory:")
+    conn = sqlite3.connect(":memory:", isolation_level=None)
+    conn.row_factory = sqlite3.Row
     _create_trades_table(conn)
-    # Insert 50 trades spread throughout today, all well in the past
-    base = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    # Insert 50 trades all in the past (latest at now-6min to clear cooldown)
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(minutes=56)
     for i in range(50):
-        opened_at = (base + timedelta(minutes=i * 10)).isoformat()
+        opened_at = (start + timedelta(minutes=i)).isoformat()
         _insert_trade(conn, asset="BTC", opened_at=opened_at)
     yield conn
     conn.close()

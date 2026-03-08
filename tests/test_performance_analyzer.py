@@ -108,7 +108,7 @@ def _insert_trade(
 
 @pytest.fixture
 def analyzer() -> TradePerformanceAnalyzer:
-    return TradePerformanceAnalyzer(db_path=":memory:")
+    return TradePerformanceAnalyzer()
 
 
 @pytest.fixture

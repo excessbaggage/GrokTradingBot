@@ -267,7 +267,7 @@ class PortfolioManager:
             SELECT COALESCE(SUM(pnl), 0) AS total_pnl
             FROM trades
             WHERE status = 'closed'
-              AND closed_at::date = ?
+              AND DATE(closed_at) = ?
             """,
             (today_str,),
         )

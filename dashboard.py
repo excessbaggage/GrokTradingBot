@@ -144,7 +144,7 @@ def api_portfolio():
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         daily_pnl_row = db.execute(
             """SELECT COALESCE(SUM(pnl), 0) AS total_pnl
-               FROM trades WHERE status = 'closed' AND closed_at::date = ?""",
+               FROM trades WHERE status = 'closed' AND DATE(closed_at) = ?""",
             (today_str,),
         ).fetchone()
 
@@ -225,7 +225,7 @@ def api_risk():
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         trade_count_row = db.execute(
             """SELECT COUNT(*) AS cnt FROM trades
-               WHERE opened_at::date = ?""",
+               WHERE DATE(opened_at) = ?""",
             (today_str,),
         ).fetchone()
 

@@ -6,7 +6,7 @@ Autonomous perpetual futures trading bot powered by xAI Grok API. Trades BTC/ETH
 - **Spec file**: `grok-trading-bot-spec.md` in project root
 - **Language**: Python 3.11+
 - **Mode**: Paper trading by default (`LIVE_TRADING=False`)
-- **Database**: SQLite at `db/trading_bot.db` (5 tables: trades, positions, grok_logs, daily_summaries, rejections + equity_snapshots)
+- **Database**: Supabase PostgreSQL via `DATABASE_URL` env var (6 tables: trades, positions, grok_logs, daily_summaries, rejections, equity_snapshots)
 
 ## Architecture (4 layers)
 
@@ -14,7 +14,7 @@ Autonomous perpetual futures trading bot powered by xAI Grok API. Trades BTC/ETH
 Config:     config/risk_config.py (immutable risk params)
             config/trading_config.py (env-based settings)
 
-Data:       data/database.py (SQLite schema + init)
+Data:       data/database.py (PostgreSQL via psycopg2 + PgConnectionWrapper)
             data/market_data.py (Hyperliquid SDK + technical indicators)
             data/portfolio_state.py (equity computation)
             data/trade_history.py (trade CRUD — all @staticmethod)
@@ -42,7 +42,7 @@ Dashboard:  dashboard.py (Flask read-only web UI on port 5050)
 - `RiskGuardian.validate(decision, portfolio_state_dict, db_connection)` — portfolio is a dict: `{equity, peak_equity, daily_pnl_pct, weekly_pnl_pct, total_exposure_pct}`
 - `TradeHistoryManager` methods are `@staticmethod` — pass db connection each time
 - Paper mode simulates fills in-memory via `_paper_state` (PaperState dataclass in order_manager.py)
-- **Dual state tracking**: Paper positions exist in BOTH SQLite `trades` table AND in-memory `_paper_state` — all close paths must update both
+- **Dual state tracking**: Paper positions exist in BOTH the `trades` table AND in-memory `_paper_state` — all close paths must update both
 
 ## Running Tests
 
@@ -67,6 +67,7 @@ hyperliquid-python-sdk, openai, pydantic>=2.0, loguru, tenacity, pandas, numpy, 
 ```
 XAI_API_KEY=           # Required: xAI/Grok API key
 GROK_MODEL=grok-3-mini # Grok model to use
+DATABASE_URL=          # Required: Supabase PostgreSQL connection string
 LIVE_TRADING=False     # NEVER set True without reading the spec
 STARTING_CAPITAL=1000  # Paper trading starting capital
 CYCLE_INTERVAL_MINUTES=15

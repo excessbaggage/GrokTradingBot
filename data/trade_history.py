@@ -196,7 +196,7 @@ class TradeHistoryManager:
             """
             SELECT *
             FROM trades
-            WHERE opened_at::date = ?
+            WHERE DATE(opened_at) = ?
             ORDER BY timestamp DESC
             """,
             (today_str,),
@@ -249,7 +249,7 @@ class TradeHistoryManager:
             """
             SELECT COUNT(*) AS cnt
             FROM trades
-            WHERE opened_at::date = ?
+            WHERE DATE(opened_at) = ?
             """,
             (today_str,),
         )

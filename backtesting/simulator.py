@@ -212,9 +212,10 @@ class BacktestSimulator:
             for closed_trade in closed_this_candle:
                 completed_trades.append(closed_trade)
                 pnl = closed_trade.get("pnl", 0.0)
-                equity += pnl
+                # Use pre-PnL equity for percentage calculation
                 daily_pnl += pnl / equity if equity > 0 else 0
                 weekly_pnl += pnl / equity if equity > 0 else 0
+                equity += pnl
                 peak_equity = max(peak_equity, equity)
 
                 # Remove from positions dict
@@ -377,7 +378,7 @@ class BacktestSimulator:
                     )
 
                     # Record in the backtest DB so time-between-trades works
-                    self._record_trade(db_conn, decision.asset, ts)
+                    self._record_trade(db_conn, decision.asset, ts, positions[decision.asset])
 
             # ----------------------------------------------------------
             # Step 4: Record equity curve
@@ -603,6 +604,7 @@ class BacktestSimulator:
         daily-trade-count checks.
         """
         conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS trades (
@@ -631,15 +633,21 @@ class BacktestSimulator:
         conn: sqlite3.Connection,
         asset: str,
         timestamp: datetime,
+        position: _SimulatedPosition,
     ) -> None:
         """Record a trade in the backtest DB for RiskGuardian queries."""
         ts_str = timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp)
+        action = f"open_{position.side}"
         conn.execute(
             """
             INSERT INTO trades (asset, action, side, size_pct, leverage,
                                 entry_price, stop_loss, take_profit, status, opened_at)
-            VALUES (?, 'open_long', 'long', 0.05, 2.0, 65000.0, 63000.0, 70000.0, 'open', ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)
             """,
-            (asset, ts_str),
+            (
+                asset, action, position.side, position.size_pct,
+                position.leverage, position.entry_price,
+                position.stop_loss, position.take_profit, ts_str,
+            ),
         )
         conn.commit()

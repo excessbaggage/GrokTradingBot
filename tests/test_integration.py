@@ -42,11 +42,94 @@ from brain.system_prompt import get_system_prompt
 from config.risk_config import RISK_PARAMS
 from data.context_builder import build_context_prompt
 from data.database import (
-    _SCHEMA_SQL,
     execute_query,
     fetch_all,
     fetch_one,
 )
+
+# SQLite-compatible schema matching the Supabase production tables.
+# Used to create in-memory test databases.
+_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT DEFAULT (datetime('now')),
+    asset TEXT NOT NULL,
+    side TEXT CHECK(side IN ('long','short')),
+    action TEXT,
+    size_pct REAL,
+    leverage REAL DEFAULT 1.0,
+    entry_price REAL,
+    exit_price REAL,
+    stop_loss REAL,
+    take_profit REAL,
+    pnl REAL,
+    pnl_pct REAL,
+    fees REAL DEFAULT 0.0,
+    status TEXT DEFAULT 'open' CHECK(status IN ('open','closed')),
+    reasoning TEXT,
+    conviction TEXT,
+    opened_at TEXT DEFAULT (datetime('now')),
+    closed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset TEXT NOT NULL,
+    side TEXT CHECK(side IN ('long','short')),
+    size_pct REAL,
+    leverage REAL DEFAULT 1.0,
+    entry_price REAL,
+    stop_loss REAL,
+    take_profit REAL,
+    unrealized_pnl REAL DEFAULT 0.0,
+    opened_at TEXT DEFAULT (datetime('now')),
+    status TEXT DEFAULT 'open' CHECK(status IN ('open','closed'))
+);
+
+CREATE TABLE IF NOT EXISTS grok_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT DEFAULT (datetime('now')),
+    system_prompt_hash TEXT,
+    context_prompt TEXT,
+    response_text TEXT,
+    decisions_json TEXT,
+    cycle_number INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS daily_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT UNIQUE,
+    starting_equity REAL,
+    ending_equity REAL,
+    pnl REAL,
+    pnl_pct REAL,
+    trades_count INTEGER DEFAULT 0,
+    wins INTEGER DEFAULT 0,
+    losses INTEGER DEFAULT 0,
+    win_rate REAL,
+    max_drawdown REAL
+);
+
+CREATE TABLE IF NOT EXISTS rejections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT DEFAULT (datetime('now')),
+    asset TEXT,
+    action TEXT,
+    reason TEXT,
+    decision_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS equity_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT DEFAULT (datetime('now')),
+    cycle_number INTEGER,
+    equity REAL,
+    unrealized_pnl REAL DEFAULT 0.0,
+    realized_pnl REAL DEFAULT 0.0,
+    open_positions INTEGER DEFAULT 0,
+    total_exposure REAL DEFAULT 0.0
+);
+"""
 from data.portfolio_state import PortfolioManager
 from data.trade_history import TradeHistoryManager
 from execution.notifications import Notifier
@@ -75,7 +158,7 @@ from utils.logger import (
 
 def _make_db() -> sqlite3.Connection:
     """Create an in-memory database with the FULL production schema."""
-    conn = sqlite3.connect(":memory:")
+    conn = sqlite3.connect(":memory:", isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

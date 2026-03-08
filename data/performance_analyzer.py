@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from loguru import logger
+from utils.logger import logger
 
 from data.database import fetch_all, fetch_one
 

@@ -326,8 +326,8 @@ class Notifier:
             return "N/A"
 
         try:
-            t_open = datetime.fromisoformat(opened)
-            t_close = datetime.fromisoformat(closed)
+            t_open = opened if isinstance(opened, datetime) else datetime.fromisoformat(opened)
+            t_close = closed if isinstance(closed, datetime) else datetime.fromisoformat(closed)
 
             # Ensure both are tz-aware for subtraction
             if t_open.tzinfo is None:

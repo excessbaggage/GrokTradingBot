@@ -126,7 +126,7 @@ def init_db(db_path: str | None = None) -> None:
 
 
 def execute_query(
-    conn: PgConnectionWrapper,
+    conn: Any,
     query: str,
     params: tuple[Any, ...] | dict[str, Any] = (),
 ) -> Any:
@@ -136,18 +136,20 @@ def execute_query(
     For multi-statement transactions, use ``conn.execute()`` directly
     and call ``conn.commit()`` when the batch is complete.
 
+    Uses the connection's ``execute()`` method so this works with both
+    :class:`PgConnectionWrapper` and plain ``sqlite3.Connection`` objects
+    (useful in tests).
+
     Args:
-        conn: An open database connection (PgConnectionWrapper).
+        conn: An open database connection (PgConnectionWrapper or sqlite3).
         query: The SQL statement (may contain ``?`` placeholders).
         params: Positional or named parameters to bind.
 
     Returns:
-        A psycopg2 cursor after execution.
+        A cursor after execution.
     """
-    pg_query = _convert_placeholders(query)
     try:
-        cursor = conn._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cursor.execute(pg_query, params)
+        cursor = conn.execute(query, params)
         conn.commit()
         return cursor
     except Exception as exc:
@@ -161,19 +163,18 @@ def execute_query(
 
 
 def fetch_one(
-    conn: PgConnectionWrapper,
+    conn: Any,
     query: str,
     params: tuple[Any, ...] | dict[str, Any] = (),
 ) -> dict[str, Any] | None:
     """Execute a query and return the first row, or ``None``.
 
-    Returns a dict (via RealDictCursor) so callers can use
-    ``row["column_name"]`` access.
+    Uses the connection's ``execute()`` method so this works with both
+    :class:`PgConnectionWrapper` and plain ``sqlite3.Connection`` objects
+    (useful in tests).
     """
-    pg_query = _convert_placeholders(query)
     try:
-        cursor = conn._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cursor.execute(pg_query, params)
+        cursor = conn.execute(query, params)
         return cursor.fetchone()
     except Exception as exc:
         logger.error(
@@ -185,18 +186,18 @@ def fetch_one(
 
 
 def fetch_all(
-    conn: PgConnectionWrapper,
+    conn: Any,
     query: str,
     params: tuple[Any, ...] | dict[str, Any] = (),
 ) -> list[dict[str, Any]]:
     """Execute a query and return all matching rows.
 
-    Returns a list of dicts (via RealDictCursor).
+    Uses the connection's ``execute()`` method so this works with both
+    :class:`PgConnectionWrapper` and plain ``sqlite3.Connection`` objects
+    (useful in tests).
     """
-    pg_query = _convert_placeholders(query)
     try:
-        cursor = conn._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cursor.execute(pg_query, params)
+        cursor = conn.execute(query, params)
         return cursor.fetchall()
     except Exception as exc:
         logger.error(
