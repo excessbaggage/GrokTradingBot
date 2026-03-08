@@ -31,7 +31,7 @@ MIN_CYCLE_INTERVAL_MINUTES = 5  # Absolute minimum between cycles
 MAX_CYCLE_INTERVAL_MINUTES = int(os.getenv("MAX_CYCLE_INTERVAL_MINUTES", "15"))  # Cap for active trading
 
 # === Grok Model ===
-GROK_MODEL = os.getenv("GROK_MODEL", "grok-4")
+GROK_MODEL = os.getenv("GROK_MODEL", "grok-4-1-fast-reasoning")
 XAI_BASE_URL = "https://api.x.ai/v1"
 GROK_MAX_TOKENS = 4096
 GROK_TEMPERATURE = 0.5  # Moderate temperature for varied trade ideas (was 0.3 in conservative mode)
@@ -46,7 +46,7 @@ ASSET_UNIVERSE = [
 
 # === X Sentiment Settings ===
 X_SENTIMENT_ENABLED = os.getenv("X_SENTIMENT_ENABLED", "True").lower() == "true"
-X_SENTIMENT_MODEL = os.getenv("X_SENTIMENT_MODEL", "grok-3-mini")
+X_SENTIMENT_MODEL = os.getenv("X_SENTIMENT_MODEL", "grok-4-1-fast-reasoning")
 X_SENTIMENT_CACHE_MINUTES = 5  # Reuse cached sentiment within this window
 
 # === Hyperliquid Settings ===

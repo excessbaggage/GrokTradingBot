@@ -1,14 +1,14 @@
 """
-Live X/Twitter sentiment fetcher via xAI Agent Tools API.
+Live X/Twitter sentiment fetcher via xAI Responses API with built-in x_search.
 
-Uses the xAI Grok API with the ``x_search`` tool to fetch real-time
-sentiment data from X for each asset in the trading universe. The model
-autonomously searches X, reads posts, and returns structured sentiment
-scores.
+Uses the xAI Responses API with the built-in ``x_search`` tool to fetch
+real-time sentiment data from X for each asset in the trading universe.
+The API auto-executes x_search server-side — no manual tool-call handling
+is needed.
 
 Features:
 - Batches all assets into a single API call for efficiency
-- Uses ``grok-3-mini`` by default (fast, cheap — this is data gathering, not decision-making)
+- Uses the Responses API with ``{"type": "x_search"}`` (built-in, server-side)
 - Caches results to avoid redundant API calls within a configurable window
 - Graceful fallback: returns empty dict on any failure (cycle continues without sentiment)
 - Same retry logic as ``grok_client.py`` (3 attempts, exponential backoff)
@@ -89,10 +89,10 @@ IMPORTANT: Only return the JSON object, nothing else. If you cannot find data fo
 
 
 class XSentimentFetcher:
-    """Fetch live X/Twitter sentiment for trading assets via xAI API.
+    """Fetch live X/Twitter sentiment for trading assets via xAI Responses API.
 
-    Uses the xAI Agent Tools API with the ``x_search`` tool to let Grok
-    autonomously search X, analyze posts, and return structured sentiment.
+    Uses the xAI Responses API with the built-in ``x_search`` tool.
+    The API auto-executes x_search server-side — no manual tool handling.
     Results are cached for ``X_SENTIMENT_CACHE_MINUTES`` to avoid
     redundant API calls.
 
@@ -101,25 +101,6 @@ class XSentimentFetcher:
         model: Model to use for sentiment analysis. Defaults to config value.
         cache_minutes: How long to cache results. Defaults to config value.
     """
-
-    # Tool definition for xAI's native X search
-    _X_SEARCH_TOOL: dict[str, Any] = {
-        "type": "function",
-        "function": {
-            "name": "x_search",
-            "description": "Search X (Twitter) for posts matching a query.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query for X posts",
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    }
 
     def __init__(
         self,
@@ -135,7 +116,7 @@ class XSentimentFetcher:
         self._client = OpenAI(
             api_key=api_key,
             base_url=XAI_BASE_URL,
-            timeout=60.0,
+            timeout=120.0,
         )
 
         # Simple in-memory cache: (timestamp, results)
@@ -207,10 +188,9 @@ class XSentimentFetcher:
     ) -> dict[str, SentimentData]:
         """Make the API call with retry logic.
 
-        This method handles the multi-turn agent tools flow:
-        1. Send initial request with x_search tool definition
-        2. If model requests tool calls, the xAI API handles them server-side
-        3. Parse the final structured JSON response
+        Uses the xAI Responses API with built-in x_search tool.
+        The API auto-executes x_search server-side and returns the
+        final structured response with sentiment data.
 
         Args:
             assets: List of asset symbols to analyze.
@@ -230,32 +210,39 @@ class XSentimentFetcher:
             asset_list,
         )
 
-        response = self._client.chat.completions.create(
+        # Use the Responses API with built-in x_search tool
+        # The API auto-executes x_search server-side
+        response = self._client.responses.create(
             model=self._model,
-            messages=[
-                {"role": "system", "content": _SENTIMENT_SYSTEM_PROMPT},
+            instructions=_SENTIMENT_SYSTEM_PROMPT,
+            input=[
                 {"role": "user", "content": user_message},
             ],
-            tools=[self._X_SEARCH_TOOL],
-            max_tokens=4096,
+            tools=[
+                {"type": "x_search"},
+            ],
             temperature=0.3,  # Low temp for consistent structured output
         )
 
-        if not response.choices:
-            logger.warning("xAI API returned empty choices list")
+        # Extract text content from the response
+        raw_text = ""
+        for item in response.output:
+            if hasattr(item, "content") and isinstance(item.content, list):
+                for block in item.content:
+                    if hasattr(block, "text"):
+                        raw_text += block.text
+            elif hasattr(item, "text"):
+                raw_text += item.text
+
+        if not raw_text:
+            logger.warning("xAI Responses API returned no text content")
             return {}
 
-        raw_text = response.choices[0].message.content or ""
-
-        if not raw_text and hasattr(response.choices[0].message, "tool_calls") and response.choices[0].message.tool_calls:
-            logger.warning("Model issued tool_calls but no final content — x_search may need server-side execution")
-            return {}
-
-        if response.usage:
+        if hasattr(response, "usage") and response.usage:
             logger.debug(
-                "Sentiment API usage | prompt={} | completion={} | total={}",
-                response.usage.prompt_tokens,
-                response.usage.completion_tokens,
+                "Sentiment API usage | input={} | output={} | total={}",
+                response.usage.input_tokens,
+                response.usage.output_tokens,
                 response.usage.total_tokens,
             )
 

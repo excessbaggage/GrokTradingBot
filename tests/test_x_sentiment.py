@@ -1,5 +1,5 @@
 """
-Tests for the X Sentiment Fetcher — live X/Twitter sentiment via xAI API.
+Tests for the X Sentiment Fetcher — live X/Twitter sentiment via xAI Responses API.
 
 All tests use mocked API responses — no network, no API keys.
 Verifies:
@@ -29,16 +29,27 @@ from data.x_sentiment import SentimentData, XSentimentFetcher, _clamp, _validate
 
 
 @pytest.fixture
-def mock_openai_response():
-    """Build a mock OpenAI API response with sentiment data."""
+def mock_responses_api_response():
+    """Build a mock xAI Responses API response with sentiment data.
+
+    The Responses API returns response.output = [item, ...] where each item
+    has a content list of blocks with .text attributes.
+    """
     def _build(content: str):
-        mock_choice = MagicMock()
-        mock_choice.message.content = content
+        # Build the text content block
+        text_block = MagicMock()
+        text_block.text = content
+
+        # Build the output item (message-like object)
+        output_item = MagicMock()
+        output_item.content = [text_block]
+
+        # Build the response
         mock_response = MagicMock()
-        mock_response.choices = [mock_choice]
+        mock_response.output = [output_item]
         mock_response.usage = MagicMock(
-            prompt_tokens=100,
-            completion_tokens=200,
+            input_tokens=100,
+            output_tokens=200,
             total_tokens=300,
         )
         return mock_response
@@ -134,11 +145,11 @@ class TestSentimentParsing:
 
     @patch("data.x_sentiment.OpenAI")
     def test_parse_valid_response(
-        self, mock_openai_cls, sample_sentiment_json, mock_openai_response
+        self, mock_openai_cls, sample_sentiment_json, mock_responses_api_response
     ) -> None:
         """Well-formed JSON should parse into SentimentData objects."""
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_openai_response(
+        mock_client.responses.create.return_value = mock_responses_api_response(
             sample_sentiment_json
         )
         mock_openai_cls.return_value = mock_client
@@ -157,12 +168,12 @@ class TestSentimentParsing:
 
     @patch("data.x_sentiment.OpenAI")
     def test_parse_markdown_wrapped(
-        self, mock_openai_cls, sample_sentiment_json, mock_openai_response
+        self, mock_openai_cls, sample_sentiment_json, mock_responses_api_response
     ) -> None:
         """JSON wrapped in markdown code fences should still parse."""
         wrapped = f"```json\n{sample_sentiment_json}\n```"
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_openai_response(wrapped)
+        mock_client.responses.create.return_value = mock_responses_api_response(wrapped)
         mock_openai_cls.return_value = mock_client
 
         fetcher = XSentimentFetcher(api_key="test-key")
@@ -172,7 +183,7 @@ class TestSentimentParsing:
         assert result["BTC"].score == 0.65
 
     @patch("data.x_sentiment.OpenAI")
-    def test_score_clamping(self, mock_openai_cls, mock_openai_response) -> None:
+    def test_score_clamping(self, mock_openai_cls, mock_responses_api_response) -> None:
         """Scores outside [-1, 1] should be clamped."""
         extreme_json = json.dumps({
             "assets": {
@@ -181,7 +192,7 @@ class TestSentimentParsing:
             }
         })
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_openai_response(extreme_json)
+        mock_client.responses.create.return_value = mock_responses_api_response(extreme_json)
         mock_openai_cls.return_value = mock_client
 
         fetcher = XSentimentFetcher(api_key="test-key")
@@ -191,7 +202,7 @@ class TestSentimentParsing:
         assert result["ETH"].score == -1.0
 
     @patch("data.x_sentiment.OpenAI")
-    def test_invalid_enum_fallback(self, mock_openai_cls, mock_openai_response) -> None:
+    def test_invalid_enum_fallback(self, mock_openai_cls, mock_responses_api_response) -> None:
         """Invalid momentum/volume values should fall back to defaults."""
         bad_enums = json.dumps({
             "assets": {
@@ -203,7 +214,7 @@ class TestSentimentParsing:
             }
         })
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_openai_response(bad_enums)
+        mock_client.responses.create.return_value = mock_responses_api_response(bad_enums)
         mock_openai_cls.return_value = mock_client
 
         fetcher = XSentimentFetcher(api_key="test-key")
@@ -214,7 +225,7 @@ class TestSentimentParsing:
 
     @patch("data.x_sentiment.OpenAI")
     def test_missing_asset_in_response(
-        self, mock_openai_cls, mock_openai_response
+        self, mock_openai_cls, mock_responses_api_response
     ) -> None:
         """Assets missing from the API response should not appear in result."""
         partial = json.dumps({
@@ -223,7 +234,7 @@ class TestSentimentParsing:
             }
         })
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_openai_response(partial)
+        mock_client.responses.create.return_value = mock_responses_api_response(partial)
         mock_openai_cls.return_value = mock_client
 
         fetcher = XSentimentFetcher(api_key="test-key")
@@ -234,7 +245,7 @@ class TestSentimentParsing:
         assert "SOL" not in result
 
     @patch("data.x_sentiment.OpenAI")
-    def test_key_topics_truncated(self, mock_openai_cls, mock_openai_response) -> None:
+    def test_key_topics_truncated(self, mock_openai_cls, mock_responses_api_response) -> None:
         """Key topics should be truncated to 5 max."""
         many_topics = json.dumps({
             "assets": {
@@ -247,7 +258,7 @@ class TestSentimentParsing:
             }
         })
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_openai_response(many_topics)
+        mock_client.responses.create.return_value = mock_responses_api_response(many_topics)
         mock_openai_cls.return_value = mock_client
 
         fetcher = XSentimentFetcher(api_key="test-key")
@@ -265,10 +276,10 @@ class TestSentimentErrorHandling:
     """Errors should return empty dict, not crash."""
 
     @patch("data.x_sentiment.OpenAI")
-    def test_empty_response(self, mock_openai_cls, mock_openai_response) -> None:
+    def test_empty_response(self, mock_openai_cls, mock_responses_api_response) -> None:
         """Empty API response should return empty dict."""
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_openai_response("")
+        mock_client.responses.create.return_value = mock_responses_api_response("")
         mock_openai_cls.return_value = mock_client
 
         fetcher = XSentimentFetcher(api_key="test-key")
@@ -276,10 +287,10 @@ class TestSentimentErrorHandling:
         assert result == {}
 
     @patch("data.x_sentiment.OpenAI")
-    def test_invalid_json(self, mock_openai_cls, mock_openai_response) -> None:
+    def test_invalid_json(self, mock_openai_cls, mock_responses_api_response) -> None:
         """Invalid JSON should return empty dict."""
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_openai_response(
+        mock_client.responses.create.return_value = mock_responses_api_response(
             "not valid json at all"
         )
         mock_openai_cls.return_value = mock_client
@@ -292,7 +303,7 @@ class TestSentimentErrorHandling:
     def test_api_exception(self, mock_openai_cls) -> None:
         """API exception should return empty dict (graceful fallback)."""
         mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = Exception("API down")
+        mock_client.responses.create.side_effect = Exception("API down")
         mock_openai_cls.return_value = mock_client
 
         fetcher = XSentimentFetcher(api_key="test-key")
@@ -323,11 +334,11 @@ class TestSentimentCaching:
 
     @patch("data.x_sentiment.OpenAI")
     def test_cache_hit(
-        self, mock_openai_cls, sample_sentiment_json, mock_openai_response
+        self, mock_openai_cls, sample_sentiment_json, mock_responses_api_response
     ) -> None:
         """Second call within TTL should reuse cached data."""
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_openai_response(
+        mock_client.responses.create.return_value = mock_responses_api_response(
             sample_sentiment_json
         )
         mock_openai_cls.return_value = mock_client
@@ -336,20 +347,20 @@ class TestSentimentCaching:
 
         # First call — hits API
         result1 = fetcher.fetch_sentiment(["BTC"])
-        assert mock_client.chat.completions.create.call_count == 1
+        assert mock_client.responses.create.call_count == 1
 
         # Second call — should use cache
         result2 = fetcher.fetch_sentiment(["BTC"])
-        assert mock_client.chat.completions.create.call_count == 1  # No new call
+        assert mock_client.responses.create.call_count == 1  # No new call
         assert result1["BTC"].score == result2["BTC"].score
 
     @patch("data.x_sentiment.OpenAI")
     def test_cache_expiry(
-        self, mock_openai_cls, sample_sentiment_json, mock_openai_response
+        self, mock_openai_cls, sample_sentiment_json, mock_responses_api_response
     ) -> None:
         """After cache TTL expires, should make a new API call."""
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_openai_response(
+        mock_client.responses.create.return_value = mock_responses_api_response(
             sample_sentiment_json
         )
         mock_openai_cls.return_value = mock_client
@@ -358,14 +369,14 @@ class TestSentimentCaching:
 
         # First call
         fetcher.fetch_sentiment(["BTC"])
-        assert mock_client.chat.completions.create.call_count == 1
+        assert mock_client.responses.create.call_count == 1
 
         # Force cache expiry by setting timestamp to past
         fetcher._cache = (time.time() - 600, fetcher._cache[1])
 
         # Second call — cache expired, hits API again
         fetcher.fetch_sentiment(["BTC"])
-        assert mock_client.chat.completions.create.call_count == 2
+        assert mock_client.responses.create.call_count == 2
 
 
 # ======================================================================
@@ -563,7 +574,7 @@ class TestSentimentEdgeCases:
 
     @patch("data.x_sentiment.OpenAI")
     def test_non_numeric_score_isolates_failure(
-        self, mock_openai_cls, mock_openai_response
+        self, mock_openai_cls, mock_responses_api_response
     ) -> None:
         """Non-numeric score on one asset should not poison other assets."""
         bad_data = json.dumps({
@@ -573,7 +584,7 @@ class TestSentimentEdgeCases:
             }
         })
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_openai_response(bad_data)
+        mock_client.responses.create.return_value = mock_responses_api_response(bad_data)
         mock_openai_cls.return_value = mock_client
 
         fetcher = XSentimentFetcher(api_key="test-key")
@@ -586,14 +597,14 @@ class TestSentimentEdgeCases:
 
     @patch("data.x_sentiment.OpenAI")
     def test_unwrapped_json_format(
-        self, mock_openai_cls, mock_openai_response
+        self, mock_openai_cls, mock_responses_api_response
     ) -> None:
         """JSON without 'assets' wrapper should still parse."""
         unwrapped = json.dumps({
             "BTC": {"score": 0.5, "momentum": "bullish", "volume": "high"},
         })
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_openai_response(unwrapped)
+        mock_client.responses.create.return_value = mock_responses_api_response(unwrapped)
         mock_openai_cls.return_value = mock_client
 
         fetcher = XSentimentFetcher(api_key="test-key")
@@ -603,12 +614,12 @@ class TestSentimentEdgeCases:
         assert result["BTC"].score == 0.5
 
     @patch("data.x_sentiment.OpenAI")
-    def test_empty_choices_returns_empty(self, mock_openai_cls) -> None:
-        """API response with empty choices list should return empty dict."""
+    def test_empty_output_returns_empty(self, mock_openai_cls) -> None:
+        """API response with empty output list should return empty dict."""
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.choices = []  # Empty choices
-        mock_client.chat.completions.create.return_value = mock_response
+        mock_response.output = []  # Empty output
+        mock_client.responses.create.return_value = mock_response
         mock_openai_cls.return_value = mock_client
 
         fetcher = XSentimentFetcher(api_key="test-key")
@@ -616,15 +627,18 @@ class TestSentimentEdgeCases:
         assert result == {}
 
     @patch("data.x_sentiment.OpenAI")
-    def test_none_content_with_tool_calls(self, mock_openai_cls) -> None:
-        """Response with tool_calls but no content should return empty dict."""
+    def test_output_without_text_returns_empty(self, mock_openai_cls) -> None:
+        """Response output items without text content should return empty dict."""
         mock_client = MagicMock()
-        mock_choice = MagicMock()
-        mock_choice.message.content = None
-        mock_choice.message.tool_calls = [MagicMock()]  # Has tool calls
+
+        # Output item with no text content (e.g., only tool calls)
+        tool_item = MagicMock()
+        tool_item.content = []  # No content blocks
+        del tool_item.text  # No direct text attribute
+
         mock_response = MagicMock()
-        mock_response.choices = [mock_choice]
-        mock_client.chat.completions.create.return_value = mock_response
+        mock_response.output = [tool_item]
+        mock_client.responses.create.return_value = mock_response
         mock_openai_cls.return_value = mock_client
 
         fetcher = XSentimentFetcher(api_key="test-key")
@@ -632,7 +646,7 @@ class TestSentimentEdgeCases:
         assert result == {}
 
     @patch("data.x_sentiment.OpenAI")
-    def test_raw_summary_truncated(self, mock_openai_cls, mock_openai_response) -> None:
+    def test_raw_summary_truncated(self, mock_openai_cls, mock_responses_api_response) -> None:
         """Raw summary longer than 500 chars should be truncated."""
         long_summary = "A" * 600
         data = json.dumps({
@@ -646,7 +660,7 @@ class TestSentimentEdgeCases:
             }
         })
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_openai_response(data)
+        mock_client.responses.create.return_value = mock_responses_api_response(data)
         mock_openai_cls.return_value = mock_client
 
         fetcher = XSentimentFetcher(api_key="test-key")

@@ -488,6 +488,10 @@ def _log_cycle_event(db, cycle_number, event_type, summary, severity="info", ass
         db.commit()
     except Exception as e:
         logger.error(f"Failed to log cycle event: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 def _save_market_snapshots(db, cycle_number, market_data, regime_data, sentiment_data):
@@ -501,6 +505,9 @@ def _save_market_snapshots(db, cycle_number, market_data, regime_data, sentiment
             regime = regime_data.get(asset)
             sentiment = sentiment_data.get(asset) if sentiment_data else None
 
+            # Cast numpy types to plain Python to avoid psycopg2 serialisation issues
+            _f = lambda v, default=0: float(v) if v is not None else float(default)
+
             db.execute(
                 """INSERT INTO market_snapshots
                    (timestamp, cycle_number, asset, price, change_24h_pct,
@@ -510,26 +517,30 @@ def _save_market_snapshots(db, cycle_number, market_data, regime_data, sentiment
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     timestamp, cycle_number, asset,
-                    data.get("price", 0),
-                    data.get("24h_change_pct", 0),
-                    funding.get("current_rate", 0),
-                    oi.get("current_oi", 0),
-                    tech.get("rsi_14", 50),
-                    tech.get("atr_pct", 0),
-                    tech.get("volatility_regime", "normal"),
+                    _f(data.get("price", 0)),
+                    _f(data.get("24h_change_pct", 0)),
+                    _f(funding.get("current_rate", 0)),
+                    _f(oi.get("current_oi", 0)),
+                    _f(tech.get("rsi_14", 50)),
+                    _f(tech.get("atr_pct", 0)),
+                    str(tech.get("volatility_regime", "normal")),
                     regime.regime.value if regime else None,
-                    regime.confidence if regime else None,
-                    regime.adx if regime else None,
-                    regime.choppiness_index if regime else None,
-                    sentiment.score if sentiment and hasattr(sentiment, "score") else None,
-                    sentiment.momentum if sentiment and hasattr(sentiment, "momentum") else None,
-                    sentiment.volume if sentiment and hasattr(sentiment, "volume") else None,
+                    float(regime.confidence) if regime and regime.confidence is not None else None,
+                    float(regime.adx) if regime and regime.adx is not None else None,
+                    float(regime.choppiness_index) if regime and regime.choppiness_index is not None else None,
+                    float(sentiment.score) if sentiment and hasattr(sentiment, "score") else None,
+                    str(sentiment.momentum) if sentiment and hasattr(sentiment, "momentum") else None,
+                    str(sentiment.volume) if sentiment and hasattr(sentiment, "volume") else None,
                     ", ".join(sentiment.key_topics[:3]) if sentiment and hasattr(sentiment, "key_topics") and sentiment.key_topics else None,
                 ),
             )
         db.commit()
     except Exception as e:
         logger.error(f"Failed to save market snapshots: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 def _save_performance_cache(db, cycle_number):
@@ -552,6 +563,10 @@ def _save_performance_cache(db, cycle_number):
         )
         db.commit()
     except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
         logger.error(f"Failed to save performance cache: {e}")
 
 

@@ -68,7 +68,7 @@ hyperliquid-python-sdk, openai, pydantic>=2.0, loguru, tenacity, pandas, numpy, 
 
 ```
 XAI_API_KEY=           # Required: xAI/Grok API key (also used for X sentiment)
-GROK_MODEL=grok-4      # Grok model for trading decisions
+GROK_MODEL=grok-4-1-fast-reasoning  # Grok model for trading decisions
 DATABASE_URL=          # Required: Supabase PostgreSQL connection string
 LIVE_TRADING=False     # NEVER set True without reading the spec
 STARTING_CAPITAL=1000  # Paper trading starting capital
@@ -76,7 +76,7 @@ CYCLE_INTERVAL_MINUTES=15
 HYPERLIQUID_WALLET_ADDRESS=  # Required for live mode only
 HYPERLIQUID_PRIVATE_KEY=     # Required for live mode only
 X_SENTIMENT_ENABLED=True     # Enable/disable live X sentiment fetching
-X_SENTIMENT_MODEL=grok-3-mini # Model for sentiment analysis (cheap/fast)
+X_SENTIMENT_MODEL=grok-4-1-fast-reasoning  # Model for sentiment analysis
 ```
 
 ## Recent Work (March 2026)

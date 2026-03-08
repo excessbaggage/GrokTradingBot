@@ -129,7 +129,7 @@ TELEGRAM_CHAT_ID=your_telegram_chat_id_here
 STARTING_CAPITAL=10000
 LIVE_TRADING=False
 CYCLE_INTERVAL_MINUTES=15
-GROK_MODEL=grok-4
+GROK_MODEL=grok-4-1-fast-reasoning
 ```
 
 ### 3. Run in Paper Mode (Default)
@@ -224,7 +224,7 @@ Press `Ctrl+C` to stop the bot. Sentinel will:
 | `LIVE_TRADING` | `False` | Paper mode by default |
 | `STARTING_CAPITAL` | `10000` | Paper mode starting equity |
 | `CYCLE_INTERVAL_MINUTES` | `15` | Time between trading cycles |
-| `GROK_MODEL` | `grok-4` | xAI model to use |
+| `GROK_MODEL` | `grok-4-1-fast-reasoning` | xAI model to use |
 | `ASSET_UNIVERSE` | `BTC, ETH, SOL` | Assets to trade |
 | `GROK_TEMPERATURE` | `0.3` | Low for deterministic decisions |
 
