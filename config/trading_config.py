@@ -26,9 +26,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # === Trading Settings ===
 LIVE_TRADING = os.getenv("LIVE_TRADING", "False").lower() == "true"
 STARTING_CAPITAL = float(os.getenv("STARTING_CAPITAL", "10000"))
-CYCLE_INTERVAL_MINUTES = int(os.getenv("CYCLE_INTERVAL_MINUTES", "15"))
+CYCLE_INTERVAL_MINUTES = int(os.getenv("CYCLE_INTERVAL_MINUTES", "5"))
 MIN_CYCLE_INTERVAL_MINUTES = 5  # Absolute minimum between cycles
-MAX_CYCLE_INTERVAL_MINUTES = int(os.getenv("MAX_CYCLE_INTERVAL_MINUTES", "15"))  # Cap for active trading
+MAX_CYCLE_INTERVAL_MINUTES = int(os.getenv("MAX_CYCLE_INTERVAL_MINUTES", "30"))  # Cap for active trading
 
 # === Grok Model ===
 GROK_MODEL = os.getenv("GROK_MODEL", "grok-4-1-fast-reasoning")
