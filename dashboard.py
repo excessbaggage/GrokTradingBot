@@ -76,6 +76,16 @@ def api_status():
         ).fetchone()
 
 
+        # Get last activity event
+        event_row = db.execute(
+            "SELECT timestamp, event_type, summary FROM cycle_events ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+        last_event = {
+            "timestamp": event_row["timestamp"] if event_row else None,
+            "type": event_row["event_type"] if event_row else None,
+            "summary": event_row["summary"] if event_row else None,
+        } if event_row else None
+
         if row:
             return jsonify({
                 "online": True,
@@ -83,6 +93,7 @@ def api_status():
                 "cycle_number": row["cycle_number"],
                 "mode": "LIVE" if LIVE_TRADING else "PAPER",
                 "assets": ASSET_UNIVERSE,
+                "last_event": last_event,
             })
         return jsonify({
             "online": False,
@@ -90,6 +101,7 @@ def api_status():
             "cycle_number": 0,
             "mode": "LIVE" if LIVE_TRADING else "PAPER",
             "assets": ASSET_UNIVERSE,
+            "last_event": last_event,
         })
     except Exception as e:
         app.logger.error("API error: %s", e)
@@ -188,6 +200,7 @@ def api_portfolio():
             "weekly_pnl_pct": round(weekly_pnl_pct, 4),
             "peak_equity": round(peak, 2),
             "drawdown_pct": round(drawdown, 4),
+            "total_fees": round(total_fees, 2),
         })
     except Exception as e:
         app.logger.error("API error: %s", e)
@@ -361,6 +374,98 @@ def api_rejections():
         return jsonify({"error": "Internal server error"}), 500
 
 
+@app.route("/api/activity")
+def api_activity():
+    """Unified activity feed from cycle_events table."""
+    try:
+        db = get_ro_db()
+        rows = db.execute(
+            """SELECT timestamp, cycle_number, event_type, severity,
+                      asset, summary, details_json
+               FROM cycle_events
+               ORDER BY timestamp DESC LIMIT 50"""
+        ).fetchall()
+
+        events = []
+        for row in rows:
+            d = dict(row)
+            if d.get("details_json") and isinstance(d["details_json"], str):
+                try:
+                    d["details"] = json.loads(d["details_json"])
+                except json.JSONDecodeError:
+                    d["details"] = None
+            elif isinstance(d.get("details_json"), dict):
+                d["details"] = d["details_json"]
+            else:
+                d["details"] = None
+            d.pop("details_json", None)
+            events.append(d)
+
+        return jsonify({"events": events})
+    except Exception as e:
+        app.logger.error("API error: %s", e)
+        return jsonify({"events": []})
+
+
+@app.route("/api/market")
+def api_market():
+    """Latest market snapshot per asset (prices, regime, sentiment)."""
+    try:
+        db = get_ro_db()
+        latest = db.execute(
+            "SELECT MAX(cycle_number) AS latest FROM market_snapshots"
+        ).fetchone()
+
+        if not latest or not latest["latest"]:
+            return jsonify({"assets": [], "cycle_number": 0})
+
+        cycle = latest["latest"]
+        rows = db.execute(
+            """SELECT asset, price, change_24h_pct, funding_rate, open_interest,
+                      rsi_14, atr_pct, volatility_regime,
+                      market_regime, regime_confidence, adx, choppiness_index,
+                      sentiment_score, sentiment_momentum, sentiment_volume,
+                      sentiment_topics, timestamp
+               FROM market_snapshots
+               WHERE cycle_number = ?
+               ORDER BY asset""",
+            (cycle,),
+        ).fetchall()
+
+        return jsonify({"assets": rows_to_dicts(rows), "cycle_number": cycle})
+    except Exception as e:
+        app.logger.error("API error: %s", e)
+        return jsonify({"assets": [], "cycle_number": 0})
+
+
+@app.route("/api/performance")
+def api_performance():
+    """Cached performance analytics from the latest cycle."""
+    try:
+        db = get_ro_db()
+        row = db.execute(
+            """SELECT metrics_json, cycle_number, timestamp
+               FROM performance_cache
+               ORDER BY timestamp DESC LIMIT 1"""
+        ).fetchone()
+
+        if not row:
+            return jsonify({"performance": None})
+
+        metrics = row["metrics_json"]
+        if isinstance(metrics, str):
+            metrics = json.loads(metrics)
+
+        return jsonify({
+            "performance": metrics,
+            "cycle_number": row["cycle_number"],
+            "timestamp": row["timestamp"],
+        })
+    except Exception as e:
+        app.logger.error("API error: %s", e)
+        return jsonify({"performance": None})
+
+
 @app.route("/api/equity-chart")
 def api_equity_chart():
     """Equity curve data for Chart.js.
@@ -499,7 +604,7 @@ DASHBOARD_HTML = """
     <main class="p-6 max-w-7xl mx-auto space-y-6">
 
         <!-- TOP STATS ROW -->
-        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-4">
             <div class="card p-4">
                 <div class="text-dark-muted text-xs uppercase tracking-wide mb-1">Equity</div>
                 <div id="equity" class="text-2xl font-bold">$0.00</div>
@@ -530,6 +635,11 @@ DASHBOARD_HTML = """
                 <div id="drawdown" class="text-2xl font-bold text-dark-text">0.00%</div>
                 <div id="peak-equity" class="text-sm text-dark-muted">Peak: $0.00</div>
             </div>
+            <div class="card p-4 border-yellow-500/30">
+                <div class="text-dark-muted text-xs uppercase tracking-wide mb-1">Total Fees</div>
+                <div id="total-fees" class="text-2xl font-bold text-yellow-400">$0.00</div>
+                <div id="total-fees-label" class="text-sm text-dark-muted">accrued trading fees</div>
+            </div>
         </div>
 
         <!-- EQUITY CHART -->
@@ -537,6 +647,53 @@ DASHBOARD_HTML = """
             <div class="text-dark-muted text-xs uppercase tracking-wide mb-3">Equity Curve</div>
             <div style="height: 250px;">
                 <canvas id="equityChart"></canvas>
+            </div>
+        </div>
+
+        <!-- RECENT TRADES -->
+        <div class="card p-4">
+            <div class="text-dark-muted text-xs uppercase tracking-wide mb-3">Recent Trades</div>
+            <div class="scrollable">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Asset</th>
+                            <th>Action</th>
+                            <th>Side</th>
+                            <th>Size</th>
+                            <th>Entry</th>
+                            <th>Exit</th>
+                            <th>P&L</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="trades-table">
+                        <tr><td colspan="9" class="text-center text-dark-muted py-8">No trades yet</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ACTIVITY FEED -->
+        <div class="card p-4">
+            <div class="flex items-center justify-between mb-3">
+                <div class="text-dark-muted text-xs uppercase tracking-wide">Live Activity Feed</div>
+                <div class="text-dark-muted text-xs" id="feed-status"></div>
+            </div>
+            <div class="scrollable" style="max-height: 360px;" id="activity-feed">
+                <div class="text-dark-muted text-center py-8">Waiting for first cycle...</div>
+            </div>
+        </div>
+
+        <!-- MARKET OVERVIEW -->
+        <div class="card p-4">
+            <div class="flex items-center justify-between mb-3">
+                <div class="text-dark-muted text-xs uppercase tracking-wide">Market Overview</div>
+                <div class="text-dark-muted text-xs" id="market-cycle"></div>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3" id="market-grid">
+                <div class="text-dark-muted text-center py-8 col-span-full">Loading market data...</div>
             </div>
         </div>
 
@@ -598,29 +755,20 @@ DASHBOARD_HTML = """
             </div>
         </div>
 
-        <!-- RECENT TRADES -->
+        <!-- PERFORMANCE ANALYTICS -->
         <div class="card p-4">
-            <div class="text-dark-muted text-xs uppercase tracking-wide mb-3">Recent Trades</div>
-            <div class="scrollable">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Time</th>
-                            <th>Asset</th>
-                            <th>Action</th>
-                            <th>Side</th>
-                            <th>Size</th>
-                            <th>Entry</th>
-                            <th>Exit</th>
-                            <th>P&L</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody id="trades-table">
-                        <tr><td colspan="9" class="text-center text-dark-muted py-8">No trades yet</td></tr>
-                    </tbody>
-                </table>
+            <div class="flex items-center gap-4 mb-3">
+                <div class="text-dark-muted text-xs uppercase tracking-wide">Performance Analytics</div>
+                <div class="flex gap-1">
+                    <button onclick="showPerfTab('strategy')" id="tab-strategy" class="px-2 py-1 rounded text-xs bg-accent/20 text-accent">Strategy</button>
+                    <button onclick="showPerfTab('assets')" id="tab-assets" class="px-2 py-1 rounded text-xs bg-dark-border text-dark-muted">Assets</button>
+                    <button onclick="showPerfTab('streaks')" id="tab-streaks" class="px-2 py-1 rounded text-xs bg-dark-border text-dark-muted">Streaks</button>
+                </div>
             </div>
+            <div id="perf-strategy" class="perf-content"></div>
+            <div id="perf-assets" class="perf-content hidden"></div>
+            <div id="perf-streaks" class="perf-content hidden"></div>
+            <div id="perf-empty" class="text-dark-muted text-center py-6 text-sm">No performance data yet</div>
         </div>
 
         <!-- REJECTIONS -->
@@ -647,13 +795,12 @@ DASHBOARD_HTML = """
 
     <!-- FOOTER -->
     <footer class="text-center text-dark-muted text-xs py-4 border-t border-dark-border">
-        Sentinel &mdash; Grok-Powered Autonomous Trader &mdash; Read-only dashboard (auto-refreshes every 30s)
+        Sentinel &mdash; Grok-Powered Autonomous Trader &mdash; Read-only dashboard (fast: 15s / slow: 30s)
     </footer>
 
     <script>
     // ─── GLOBALS ─────────────────────────────────────────────
     let equityChart = null;
-    const REFRESH_INTERVAL = 30000; // 30 seconds
 
     // ─── FORMATTERS ─────────────────────────────────────────
     function fmtUsd(val) {
@@ -781,6 +928,9 @@ DASHBOARD_HTML = """
         ddEl.textContent = fmtPct(data.drawdown_pct, false);
         ddEl.className = `text-2xl font-bold ${data.drawdown_pct > 10 ? 'text-loss' : data.drawdown_pct > 5 ? 'text-yellow-400' : 'text-dark-text'}`;
         document.getElementById('peak-equity').textContent = `Peak: ${fmtUsd(data.peak_equity)}`;
+
+        // Total fees card
+        document.getElementById('total-fees').textContent = fmtUsd(data.total_fees || 0);
     }
 
     async function updateRisk() {
@@ -991,26 +1141,346 @@ DASHBOARD_HTML = """
         });
     }
 
-    // ─── REFRESH ALL ─────────────────────────────────────────
+    // ─── HELPERS FOR NEW PANELS ─────────────────────────────
 
-    async function refreshAll() {
+    function timeAgo(ts) {
+        if (!ts) return '';
+        try {
+            const d = new Date(ts.includes('T') ? ts : ts + 'Z');
+            const secs = Math.floor((Date.now() - d.getTime()) / 1000);
+            if (secs < 60) return secs + 's ago';
+            if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
+            if (secs < 86400) return Math.floor(secs / 3600) + 'h ago';
+            return Math.floor(secs / 86400) + 'd ago';
+        } catch { return ''; }
+    }
+
+    const EVENT_ICONS = {
+        cycle_start: '\u{1F504}', cycle_end: '\u{2705}',
+        trade_opened: '\u{1F4C8}', trade_closed: '\u{1F4C9}',
+        trade_rejected: '\u{1F6AB}', sentiment_fetched: '\u{1F4F0}',
+        grok_decision: '\u{1F9E0}', error: '\u{26A0}\u{FE0F}'
+    };
+    const SEVERITY_BORDER = {
+        info: 'border-l-blue-500', success: 'border-l-green-500',
+        warn: 'border-l-yellow-500', error: 'border-l-red-500'
+    };
+
+    // ─── ACTIVITY FEED ──────────────────────────────────────
+
+    async function updateActivity() {
+        const data = await fetchJson('/api/activity');
+        if (!data || !data.events) return;
+
+        const feed = document.getElementById('activity-feed');
+        if (data.events.length === 0) {
+            feed.textContent = 'Waiting for first cycle...';
+            return;
+        }
+        document.getElementById('feed-status').textContent = data.events.length + ' events';
+
+        // Build activity items using DOM methods (XSS-safe)
+        while (feed.firstChild) feed.removeChild(feed.firstChild);
+        data.events.forEach(ev => {
+            const row = document.createElement('div');
+            row.className = 'flex items-start gap-3 py-2 border-l-2 pl-3 mb-1 ' +
+                (SEVERITY_BORDER[ev.severity] || 'border-l-blue-500');
+
+            const icon = document.createElement('span');
+            icon.className = 'text-sm mt-0.5';
+            icon.textContent = EVENT_ICONS[ev.event_type] || '\u{25CF}';
+
+            const body = document.createElement('div');
+            body.className = 'flex-1 min-w-0';
+
+            const top = document.createElement('div');
+            top.className = 'flex items-center gap-2';
+            const summarySpan = document.createElement('span');
+            summarySpan.className = 'text-sm truncate';
+            summarySpan.textContent = ev.summary || '';
+            const timeSpan = document.createElement('span');
+            timeSpan.className = 'text-xs text-dark-muted whitespace-nowrap';
+            timeSpan.textContent = timeAgo(ev.timestamp);
+            top.appendChild(summarySpan);
+            top.appendChild(timeSpan);
+
+            const meta = document.createElement('div');
+            meta.className = 'text-xs text-dark-muted';
+            meta.textContent = 'Cycle ' + (ev.cycle_number || '-');
+            if (ev.asset) meta.textContent += ' \u2022 ' + ev.asset;
+
+            body.appendChild(top);
+            body.appendChild(meta);
+            row.appendChild(icon);
+            row.appendChild(body);
+            feed.appendChild(row);
+        });
+    }
+
+    // ─── MARKET OVERVIEW ────────────────────────────────────
+
+    function regimeBadge(regime) {
+        if (!regime) return '';
+        const colors = {
+            'trending_up': 'bg-green-500/20 text-green-400',
+            'trending_down': 'bg-red-500/20 text-red-400',
+            'ranging': 'bg-blue-500/20 text-blue-400',
+            'volatile_expansion': 'bg-yellow-500/20 text-yellow-400',
+            'mean_reverting': 'bg-purple-500/20 text-purple-400'
+        };
+        return colors[regime] || 'bg-dark-border text-dark-muted';
+    }
+
+    function sentimentColor(score) {
+        if (score == null) return '#8b8fa3';
+        if (score > 0.3) return '#22c55e';
+        if (score < -0.3) return '#ef4444';
+        return '#eab308';
+    }
+
+    async function updateMarket() {
+        const data = await fetchJson('/api/market');
+        if (!data || !data.assets) return;
+
+        const grid = document.getElementById('market-grid');
+        const cycleEl = document.getElementById('market-cycle');
+        cycleEl.textContent = data.cycle_number ? 'Cycle ' + data.cycle_number : '';
+
+        if (data.assets.length === 0) {
+            grid.textContent = 'Loading market data...';
+            return;
+        }
+
+        // Build market cards using DOM methods (XSS-safe)
+        while (grid.firstChild) grid.removeChild(grid.firstChild);
+        data.assets.forEach(a => {
+            const card = document.createElement('div');
+            card.className = 'bg-dark-bg rounded-lg p-3';
+
+            // Asset name row
+            const nameRow = document.createElement('div');
+            nameRow.className = 'flex items-center justify-between mb-2';
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'font-bold text-sm uppercase';
+            nameSpan.textContent = a.asset || '';
+            const changeSpan = document.createElement('span');
+            const chg = parseFloat(a.change_24h_pct) || 0;
+            changeSpan.className = 'text-xs font-medium ' + pnlColor(chg);
+            changeSpan.textContent = fmtPct(chg);
+            nameRow.appendChild(nameSpan);
+            nameRow.appendChild(changeSpan);
+
+            // Price
+            const priceDiv = document.createElement('div');
+            priceDiv.className = 'text-lg font-bold mb-2';
+            priceDiv.textContent = '$' + fmtPrice(parseFloat(a.price) || 0);
+
+            // Regime badge
+            const regimeDiv = document.createElement('div');
+            regimeDiv.className = 'mb-2';
+            if (a.market_regime) {
+                const badge = document.createElement('span');
+                badge.className = 'px-2 py-0.5 rounded-full text-xs ' + regimeBadge(a.market_regime);
+                badge.textContent = (a.market_regime || '').replace(/_/g, ' ');
+                regimeDiv.appendChild(badge);
+            }
+
+            // Metrics row
+            const metricsDiv = document.createElement('div');
+            metricsDiv.className = 'grid grid-cols-2 gap-1 text-xs';
+
+            const rsiLabel = document.createElement('span');
+            rsiLabel.className = 'text-dark-muted';
+            rsiLabel.textContent = 'RSI';
+            const rsiVal = document.createElement('span');
+            const rsi = parseFloat(a.rsi_14) || 50;
+            rsiVal.className = rsi > 70 ? 'text-loss' : rsi < 30 ? 'text-profit' : '';
+            rsiVal.textContent = rsi.toFixed(1);
+
+            const sentLabel = document.createElement('span');
+            sentLabel.className = 'text-dark-muted';
+            sentLabel.textContent = 'Sent.';
+            const sentVal = document.createElement('span');
+            const sentScore = parseFloat(a.sentiment_score);
+            sentVal.style.color = sentimentColor(isNaN(sentScore) ? null : sentScore);
+            sentVal.textContent = isNaN(sentScore) ? '-' : sentScore.toFixed(2);
+
+            metricsDiv.appendChild(rsiLabel);
+            metricsDiv.appendChild(rsiVal);
+            metricsDiv.appendChild(sentLabel);
+            metricsDiv.appendChild(sentVal);
+
+            card.appendChild(nameRow);
+            card.appendChild(priceDiv);
+            card.appendChild(regimeDiv);
+            card.appendChild(metricsDiv);
+            grid.appendChild(card);
+        });
+    }
+
+    // ─── PERFORMANCE ANALYTICS ──────────────────────────────
+
+    function showPerfTab(tab) {
+        ['strategy', 'assets', 'streaks'].forEach(t => {
+            const el = document.getElementById('perf-' + t);
+            const btn = document.getElementById('tab-' + t);
+            if (t === tab) {
+                el.classList.remove('hidden');
+                btn.className = 'px-2 py-1 rounded text-xs bg-accent/20 text-accent';
+            } else {
+                el.classList.add('hidden');
+                btn.className = 'px-2 py-1 rounded text-xs bg-dark-border text-dark-muted';
+            }
+        });
+    }
+
+    async function updatePerformance() {
+        const data = await fetchJson('/api/performance');
+        if (!data || !data.performance) return;
+        const p = data.performance;
+
+        document.getElementById('perf-empty').classList.add('hidden');
+
+        // Strategy tab
+        const stratEl = document.getElementById('perf-strategy');
+        while (stratEl.firstChild) stratEl.removeChild(stratEl.firstChild);
+        if (p.strategy) {
+            const strat = p.strategy;
+            const grid = document.createElement('div');
+            grid.className = 'grid grid-cols-2 md:grid-cols-4 gap-4';
+
+            const items = [
+                { label: 'Total Trades', value: strat.total_trades || 0 },
+                { label: 'Win Rate', value: fmtPct(strat.win_rate_pct || 0, false) },
+                { label: 'Avg Win', value: fmtUsd(strat.avg_win || 0), cls: 'text-profit' },
+                { label: 'Avg Loss', value: fmtUsd(strat.avg_loss || 0), cls: 'text-loss' },
+                { label: 'Long Win %', value: fmtPct(strat.long_win_rate_pct || 0, false) },
+                { label: 'Short Win %', value: fmtPct(strat.short_win_rate_pct || 0, false) },
+                { label: 'Best Trade', value: fmtUsd(strat.best_trade || 0), cls: 'text-profit' },
+                { label: 'Worst Trade', value: fmtUsd(strat.worst_trade || 0), cls: 'text-loss' },
+            ];
+            items.forEach(item => {
+                const card = document.createElement('div');
+                card.className = 'bg-dark-bg rounded p-3';
+                const lbl = document.createElement('div');
+                lbl.className = 'text-xs text-dark-muted uppercase mb-1';
+                lbl.textContent = item.label;
+                const val = document.createElement('div');
+                val.className = 'text-lg font-bold ' + (item.cls || '');
+                val.textContent = item.value;
+                card.appendChild(lbl);
+                card.appendChild(val);
+                grid.appendChild(card);
+            });
+            stratEl.appendChild(grid);
+        }
+
+        // Assets tab
+        const assetEl = document.getElementById('perf-assets');
+        while (assetEl.firstChild) assetEl.removeChild(assetEl.firstChild);
+        if (p.asset && typeof p.asset === 'object') {
+            const tbl = document.createElement('table');
+            const thead = document.createElement('thead');
+            const headerRow = document.createElement('tr');
+            ['Asset', 'Trades', 'Win Rate', 'Total P&L'].forEach(h => {
+                const th = document.createElement('th');
+                th.textContent = h;
+                headerRow.appendChild(th);
+            });
+            thead.appendChild(headerRow);
+            tbl.appendChild(thead);
+
+            const tbody = document.createElement('tbody');
+            Object.entries(p.asset).forEach(([asset, stats]) => {
+                const tr = document.createElement('tr');
+                const tdAsset = document.createElement('td');
+                tdAsset.className = 'font-medium uppercase';
+                tdAsset.textContent = asset;
+                const tdTrades = document.createElement('td');
+                tdTrades.textContent = stats.count || 0;
+                const tdWR = document.createElement('td');
+                tdWR.textContent = fmtPct(stats.win_rate_pct || 0, false);
+                const tdPnl = document.createElement('td');
+                const pnl = stats.total_pnl || 0;
+                tdPnl.className = pnlColor(pnl);
+                tdPnl.textContent = fmtUsd(pnl);
+                tr.appendChild(tdAsset);
+                tr.appendChild(tdTrades);
+                tr.appendChild(tdWR);
+                tr.appendChild(tdPnl);
+                tbody.appendChild(tr);
+            });
+            tbl.appendChild(tbody);
+            assetEl.appendChild(tbl);
+        }
+
+        // Streaks tab
+        const streakEl = document.getElementById('perf-streaks');
+        while (streakEl.firstChild) streakEl.removeChild(streakEl.firstChild);
+        if (p.streaks) {
+            const sk = p.streaks;
+            const grid = document.createElement('div');
+            grid.className = 'grid grid-cols-2 md:grid-cols-3 gap-4';
+
+            const items = [
+                { label: 'Current Streak', value: sk.current_streak || 0,
+                  cls: (sk.current_streak || 0) > 0 ? 'text-profit' : (sk.current_streak || 0) < 0 ? 'text-loss' : '' },
+                { label: 'Best Win Streak', value: sk.best_win_streak || 0, cls: 'text-profit' },
+                { label: 'Worst Loss Streak', value: sk.worst_loss_streak || 0, cls: 'text-loss' },
+            ];
+            items.forEach(item => {
+                const card = document.createElement('div');
+                card.className = 'bg-dark-bg rounded p-3';
+                const lbl = document.createElement('div');
+                lbl.className = 'text-xs text-dark-muted uppercase mb-1';
+                lbl.textContent = item.label;
+                const val = document.createElement('div');
+                val.className = 'text-lg font-bold ' + (item.cls || '');
+                val.textContent = item.value;
+                card.appendChild(lbl);
+                card.appendChild(val);
+                grid.appendChild(card);
+            });
+            streakEl.appendChild(grid);
+        }
+    }
+
+    // ─── DUAL-SPEED POLLING ─────────────────────────────────
+
+    const FAST_INTERVAL = 15000;  // 15s for real-time data
+    const SLOW_INTERVAL = 30000;  // 30s for heavier queries
+
+    async function refreshFast() {
         await Promise.all([
             updateStatus(),
-            updatePortfolio(),
-            updateRisk(),
+            updateActivity(),
+            updateMarket(),
             updatePositions(),
-            updateTrades(),
-            updateAnalysis(),
-            updateRejections(),
-            updateEquityChart(),
         ]);
         document.getElementById('last-update').textContent =
             'Updated: ' + new Date().toLocaleTimeString();
     }
 
-    // Initial load + auto-refresh
+    async function refreshSlow() {
+        await Promise.all([
+            updatePortfolio(),
+            updateRisk(),
+            updateTrades(),
+            updateAnalysis(),
+            updateRejections(),
+            updateEquityChart(),
+            updatePerformance(),
+        ]);
+    }
+
+    async function refreshAll() {
+        await Promise.all([refreshFast(), refreshSlow()]);
+    }
+
+    // Initial load + dual-speed auto-refresh
     refreshAll();
-    setInterval(refreshAll, REFRESH_INTERVAL);
+    setInterval(refreshFast, FAST_INTERVAL);
+    setInterval(refreshSlow, SLOW_INTERVAL);
     </script>
 </body>
 </html>

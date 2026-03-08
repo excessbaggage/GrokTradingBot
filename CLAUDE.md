@@ -6,7 +6,7 @@ Autonomous perpetual futures trading bot powered by xAI Grok API. Trades 17 perp
 - **Spec file**: `grok-trading-bot-spec.md` in project root
 - **Language**: Python 3.11+
 - **Mode**: Paper trading by default (`LIVE_TRADING=False`)
-- **Database**: Supabase PostgreSQL via `DATABASE_URL` env var (6 tables: trades, positions, grok_logs, daily_summaries, rejections, equity_snapshots)
+- **Database**: Supabase PostgreSQL via `DATABASE_URL` env var (9 tables: trades, positions, grok_logs, daily_summaries, rejections, equity_snapshots, cycle_events, market_snapshots, performance_cache)
 
 ## Architecture (4 layers)
 

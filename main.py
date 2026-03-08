@@ -13,6 +13,7 @@ Usage:
     python main.py
 """
 
+import json as _json
 import sys
 import signal
 import time
@@ -117,6 +118,7 @@ def run_cycle(
     """
     db = get_db_connection()
     logger.info(f"=== CYCLE {cycle_number} START ===")
+    _log_cycle_event(db, cycle_number, "cycle_start", f"Cycle {cycle_number} started")
 
     try:
         # --- Step 1: Check kill switch ---
@@ -192,6 +194,9 @@ def run_cycle(
                     list(market_data.keys())
                 )
                 logger.info(f"X sentiment fetched for {len(sentiment_data)} assets")
+                _log_cycle_event(db, cycle_number, "sentiment_fetched",
+                    f"Sentiment fetched for {len(sentiment_data)} assets",
+                    details={a: {"score": s.score, "momentum": s.momentum} for a, s in sentiment_data.items()})
             except Exception as e:
                 logger.warning(f"X sentiment fetch failed: {e}")
 
@@ -231,6 +236,9 @@ def run_cycle(
 
         logger.info(f"Grok stance: {grok_response.overall_stance}")
         logger.info(f"Decisions count: {len(grok_response.decisions)}")
+        _log_cycle_event(db, cycle_number, "grok_decision",
+            f"Grok: {grok_response.overall_stance} | {len(grok_response.decisions)} decisions",
+            details={"stance": grok_response.overall_stance, "decision_count": len(grok_response.decisions)})
 
         # --- Step 9: Extract actionable decisions ---
         actionable = decision_parser.extract_decisions(grok_response)
@@ -279,6 +287,10 @@ def run_cycle(
                         trade_history.log_trade(db, trade_data)
                         notifier.send_trade_alert(decision, order_result)
                         logger.info(f"Trade executed: {order_result}")
+                        _log_cycle_event(db, cycle_number, "trade_opened",
+                            f"{decision.action} {decision.asset} @ ${order_result.get('fill_price', 0):,.2f}",
+                            severity="success", asset=decision.asset,
+                            details={"action": decision.action, "size_pct": decision.size_pct, "leverage": decision.leverage})
                     else:
                         logger.error(f"Order placement failed for {decision.asset}")
                         notifier.send_error_alert(
@@ -287,6 +299,10 @@ def run_cycle(
                 else:
                     logger.warning(f"REJECTED: {decision.action} {decision.asset} — {validation.reason}")
                     _log_rejection(db, decision, validation.reason)
+                    _log_cycle_event(db, cycle_number, "trade_rejected",
+                        f"Rejected {decision.action} {decision.asset}: {validation.reason}",
+                        severity="warn", asset=decision.asset,
+                        details={"action": decision.action, "reason": validation.reason})
 
         # --- Step 11: Manage existing positions ---
         position_mgr.manage_open_positions(db)
@@ -294,11 +310,23 @@ def run_cycle(
         # --- Step 11b: Save equity snapshot for dashboard chart ---
         _save_equity_snapshot(db, cycle_number, portfolio)
 
+        # --- Step 11c: Save market + regime + sentiment snapshots for dashboard ---
+        _save_market_snapshots(db, cycle_number, market_data, regime_data, sentiment_data)
+        _save_performance_cache(db, cycle_number)
+
         # --- Step 12: Daily summary ---
         now = datetime.now(timezone.utc)
         if now.hour == DAILY_SUMMARY_HOUR_UTC and now.minute < CYCLE_INTERVAL_MINUTES:
             summary = _generate_daily_summary(db, portfolio)
             notifier.send_daily_summary(summary)
+            # Cleanup old dashboard data (keep 7 days)
+            try:
+                db.execute("DELETE FROM cycle_events WHERE timestamp < NOW() - INTERVAL '7 days'")
+                db.execute("DELETE FROM market_snapshots WHERE timestamp < NOW() - INTERVAL '7 days'")
+                db.execute("DELETE FROM performance_cache WHERE timestamp < NOW() - INTERVAL '48 hours'")
+                db.commit()
+            except Exception:
+                pass  # Non-critical cleanup
 
         # --- Step 13: Determine next cycle timing ---
         suggested = grok_response.next_review_suggestion_minutes
@@ -306,6 +334,9 @@ def run_cycle(
         if suggested != next_cycle:
             logger.info(f"Grok suggested {suggested} min, clamped to {next_cycle} min")
         logger.info(f"=== CYCLE {cycle_number} COMPLETE === Next in {next_cycle} min")
+        _log_cycle_event(db, cycle_number, "cycle_end",
+            f"Cycle {cycle_number} complete. Next in {next_cycle} min",
+            details={"next_cycle_minutes": next_cycle})
         return next_cycle
 
     except Exception as e:
@@ -418,6 +449,89 @@ def _save_equity_snapshot(db, cycle_number, portfolio):
         )
     except Exception as e:
         logger.error(f"Failed to save equity snapshot: {e}")
+
+
+def _log_cycle_event(db, cycle_number, event_type, summary, severity="info", asset=None, details=None):
+    """Log an event to the cycle_events table for the dashboard activity feed."""
+    try:
+        db.execute(
+            """INSERT INTO cycle_events
+               (timestamp, cycle_number, event_type, severity, asset, summary, details_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.now(timezone.utc).isoformat(),
+                cycle_number, event_type, severity, asset, summary,
+                _json.dumps(details) if details else None,
+            ),
+        )
+        db.commit()
+    except Exception as e:
+        logger.error(f"Failed to log cycle event: {e}")
+
+
+def _save_market_snapshots(db, cycle_number, market_data, regime_data, sentiment_data):
+    """Save per-asset market state (price, regime, sentiment) for the dashboard."""
+    try:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        for asset, data in market_data.items():
+            tech = data.get("technicals", {})
+            funding = data.get("funding", {})
+            oi = data.get("oi", {})
+            regime = regime_data.get(asset)
+            sentiment = sentiment_data.get(asset) if sentiment_data else None
+
+            db.execute(
+                """INSERT INTO market_snapshots
+                   (timestamp, cycle_number, asset, price, change_24h_pct,
+                    funding_rate, open_interest, rsi_14, atr_pct, volatility_regime,
+                    market_regime, regime_confidence, adx, choppiness_index,
+                    sentiment_score, sentiment_momentum, sentiment_volume, sentiment_topics)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    timestamp, cycle_number, asset,
+                    data.get("price", 0),
+                    data.get("24h_change_pct", 0),
+                    funding.get("current_rate", 0),
+                    oi.get("current_oi", 0),
+                    tech.get("rsi_14", 50),
+                    tech.get("atr_pct", 0),
+                    tech.get("volatility_regime", "normal"),
+                    regime.regime.value if regime else None,
+                    regime.confidence if regime else None,
+                    regime.adx if regime else None,
+                    regime.choppiness_index if regime else None,
+                    sentiment.score if sentiment and hasattr(sentiment, "score") else None,
+                    sentiment.momentum if sentiment and hasattr(sentiment, "momentum") else None,
+                    sentiment.volume if sentiment and hasattr(sentiment, "volume") else None,
+                    ", ".join(sentiment.key_topics[:3]) if sentiment and hasattr(sentiment, "key_topics") and sentiment.key_topics else None,
+                ),
+            )
+        db.commit()
+    except Exception as e:
+        logger.error(f"Failed to save market snapshots: {e}")
+
+
+def _save_performance_cache(db, cycle_number):
+    """Compute and cache performance analytics for the dashboard."""
+    try:
+        analyzer = TradePerformanceAnalyzer()
+        metrics = {
+            "strategy": analyzer.get_strategy_performance(db),
+            "asset": analyzer.get_asset_performance(db),
+            "streaks": analyzer.get_streak_analysis(db),
+        }
+        db.execute(
+            """INSERT INTO performance_cache (timestamp, cycle_number, metrics_json)
+               VALUES (?, ?, ?)""",
+            (
+                datetime.now(timezone.utc).isoformat(),
+                cycle_number,
+                _json.dumps(metrics, default=str),
+            ),
+        )
+        db.commit()
+    except Exception as e:
+        logger.error(f"Failed to save performance cache: {e}")
 
 
 def _generate_daily_summary(db, portfolio) -> dict:
