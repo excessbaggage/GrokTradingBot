@@ -43,6 +43,9 @@ from data.market_data import MarketDataFetcher
 from data.portfolio_state import PortfolioManager
 from data.trade_history import TradeHistoryManager
 from data.context_builder import build_context_prompt
+from data.performance_analyzer import TradePerformanceAnalyzer
+from data.regime_detector import RegimeDetector
+from data.liquidation_estimator import LiquidationEstimator
 from brain.grok_client import GrokClient
 from brain.system_prompt import get_system_prompt
 from brain.decision_parser import DecisionParser
@@ -144,12 +147,46 @@ def run_cycle(
         recent_trades = trade_history.get_recent_trades(db, limit=10)
         risk_status = risk_guardian.calculate_risk_status(portfolio, db)
 
+        # --- Step 4b: Generate performance analytics ---
+        performance_summary = ""
+        try:
+            analyzer = TradePerformanceAnalyzer()
+            performance_summary = analyzer.generate_performance_summary(db)
+        except Exception as e:
+            logger.warning(f"Performance analytics generation failed: {e}")
+
+        # --- Step 4c: Detect market regimes ---
+        regime_data = {}
+        try:
+            detector = RegimeDetector()
+            for asset, data in market_data.items():
+                candles_1h = data.get("candles", {}).get("1h")
+                candles_4h = data.get("candles", {}).get("4h")
+                regime_data[asset] = detector.detect(asset, candles_1h, candles_4h)
+        except Exception as e:
+            logger.warning(f"Regime detection failed: {e}")
+
+        # --- Step 4d: Estimate liquidation clusters ---
+        liquidation_data = {}
+        try:
+            estimator = LiquidationEstimator()
+            for asset, data in market_data.items():
+                price = data.get("price", 0)
+                oi = data.get("oi", {}).get("current_oi", 0)
+                if price > 0 and oi > 0:
+                    liquidation_data[asset] = estimator.estimate(asset, price, oi)
+        except Exception as e:
+            logger.warning(f"Liquidation estimation failed: {e}")
+
         # --- Step 5: Build context prompt ---
         context = build_context_prompt(
             market_data=market_data,
             portfolio=portfolio,
             recent_trades=recent_trades,
             risk_status=risk_status,
+            performance_summary=performance_summary,
+            liquidation_data=liquidation_data,
+            regime_data=regime_data,
         )
 
         # --- Step 6: Query Grok ---

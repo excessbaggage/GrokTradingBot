@@ -4,6 +4,8 @@ Formatting, math, and time utility functions used throughout the trading bot.
 All helpers are pure functions with no side effects.
 """
 
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
 from typing import Any
 

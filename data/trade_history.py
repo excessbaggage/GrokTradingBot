@@ -8,7 +8,6 @@ auditability and performance tracking.
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,7 +20,7 @@ class TradeHistoryManager:
     """Provides convenience methods for logging and querying trades.
 
     All methods are static -- no instance state is needed.  Pass an
-    open ``sqlite3.Connection`` to each method.
+    open database connection to each method.
 
     Usage::
 
@@ -32,7 +31,7 @@ class TradeHistoryManager:
     """
 
     @staticmethod
-    def log_trade(db: sqlite3.Connection, trade_data: dict[str, Any]) -> int:
+    def log_trade(db: Any, trade_data: dict[str, Any]) -> int:
         """Insert a new trade record into the database.
 
         Args:
@@ -62,6 +61,7 @@ class TradeHistoryManager:
                  entry_price, stop_loss, take_profit, fees, status,
                  reasoning, conviction, opened_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+            RETURNING id
             """,
             (
                 now,
@@ -79,7 +79,8 @@ class TradeHistoryManager:
                 now,
             ),
         )
-        trade_id = cursor.lastrowid
+        row = cursor.fetchone()
+        trade_id = row["id"] if row else None
         logger.info(
             "Trade logged | id={tid} asset={asset} side={side} action={act} "
             "size={sz}% entry={entry}",
@@ -94,7 +95,7 @@ class TradeHistoryManager:
 
     @staticmethod
     def close_trade(
-        db: sqlite3.Connection,
+        db: Any,
         trade_id: int,
         exit_price: float,
         pnl: float,
@@ -155,7 +156,7 @@ class TradeHistoryManager:
 
     @staticmethod
     def get_recent_trades(
-        db: sqlite3.Connection,
+        db: Any,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         """Fetch the most recent trades (open or closed).
@@ -180,7 +181,7 @@ class TradeHistoryManager:
         return [dict(row) for row in rows]
 
     @staticmethod
-    def get_trades_today(db: sqlite3.Connection) -> list[dict[str, Any]]:
+    def get_trades_today(db: Any) -> list[dict[str, Any]]:
         """Fetch all trades opened today (UTC).
 
         Args:
@@ -195,7 +196,7 @@ class TradeHistoryManager:
             """
             SELECT *
             FROM trades
-            WHERE date(opened_at) = ?
+            WHERE opened_at::date = ?
             ORDER BY timestamp DESC
             """,
             (today_str,),
@@ -203,7 +204,7 @@ class TradeHistoryManager:
         return [dict(row) for row in rows]
 
     @staticmethod
-    def get_last_trade_time(db: sqlite3.Connection) -> datetime | None:
+    def get_last_trade_time(db: Any) -> datetime | None:
         """Return the timestamp of the most recently opened trade.
 
         Args:
@@ -232,7 +233,7 @@ class TradeHistoryManager:
         return None
 
     @staticmethod
-    def get_daily_trade_count(db: sqlite3.Connection) -> int:
+    def get_daily_trade_count(db: Any) -> int:
         """Count how many trades have been opened today (UTC).
 
         Args:
@@ -247,7 +248,7 @@ class TradeHistoryManager:
             """
             SELECT COUNT(*) AS cnt
             FROM trades
-            WHERE date(opened_at) = ?
+            WHERE opened_at::date = ?
             """,
             (today_str,),
         )

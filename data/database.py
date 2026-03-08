@@ -1,168 +1,103 @@
 """
-SQLite database initialization and helper functions.
+PostgreSQL database helpers (Supabase).
 
-All persistent state lives here -- trades, positions, Grok interaction logs,
-daily summaries, and risk-guardian rejections.  The schema is created
-automatically on first run via :func:`init_db`.
+Provides a thin wrapper around psycopg2 that preserves the same
+interface used by the rest of the codebase (execute_query, fetch_one,
+fetch_all, db_session).  The PgConnectionWrapper class translates
+SQLite conventions (? placeholders, conn.execute()) to PostgreSQL.
 """
 
+from __future__ import annotations
+
 import os
-import sqlite3
 from contextlib import contextmanager
 from typing import Any, Generator
 
+import psycopg2
+import psycopg2.extras
+
 from utils.logger import logger
-from config.trading_config import DB_PATH
+from config.trading_config import DATABASE_URL
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SCHEMA DEFINITIONS
+# PLACEHOLDER CONVERSION
 # ═══════════════════════════════════════════════════════════════════════════
 
-_SCHEMA_SQL = """
--- -----------------------------------------------------------------------
--- trades: full history of every opened/closed trade
--- -----------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS trades (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp       TEXT    NOT NULL DEFAULT (datetime('now')),
-    asset           TEXT    NOT NULL,
-    side            TEXT    NOT NULL CHECK (side IN ('long', 'short')),
-    action          TEXT    NOT NULL,
-    size_pct        REAL    NOT NULL,
-    leverage        REAL    NOT NULL DEFAULT 1.0,
-    entry_price     REAL,
-    exit_price      REAL,
-    stop_loss       REAL,
-    take_profit     REAL,
-    pnl             REAL,
-    pnl_pct         REAL,
-    fees            REAL    DEFAULT 0.0,
-    status          TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
-    reasoning       TEXT,
-    conviction      TEXT,
-    opened_at       TEXT    NOT NULL DEFAULT (datetime('now')),
-    closed_at       TEXT
-);
+def _convert_placeholders(query: str) -> str:
+    """Convert SQLite ``?`` positional placeholders to PostgreSQL ``%s``.
 
--- -----------------------------------------------------------------------
--- positions: live / historical position snapshots
--- -----------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS positions (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    asset           TEXT    NOT NULL,
-    side            TEXT    NOT NULL CHECK (side IN ('long', 'short')),
-    size_pct        REAL    NOT NULL,
-    leverage        REAL    NOT NULL DEFAULT 1.0,
-    entry_price     REAL    NOT NULL,
-    stop_loss       REAL,
-    take_profit     REAL,
-    unrealized_pnl  REAL    DEFAULT 0.0,
-    opened_at       TEXT    NOT NULL DEFAULT (datetime('now')),
-    status          TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed'))
-);
+    This is safe because parameterised queries never contain literal ``?``
+    characters in the SQL text itself — those values live in the params
+    tuple.
+    """
+    return query.replace("?", "%s")
 
--- -----------------------------------------------------------------------
--- grok_logs: every prompt/response pair for auditability
--- -----------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS grok_logs (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp           TEXT    NOT NULL DEFAULT (datetime('now')),
-    system_prompt_hash  TEXT,
-    context_prompt      TEXT    NOT NULL,
-    response_text       TEXT    NOT NULL,
-    decisions_json      TEXT,
-    cycle_number        INTEGER
-);
 
--- -----------------------------------------------------------------------
--- daily_summaries: aggregated end-of-day performance
--- -----------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS daily_summaries (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    date            TEXT    NOT NULL UNIQUE,
-    starting_equity REAL,
-    ending_equity   REAL,
-    pnl             REAL,
-    pnl_pct         REAL,
-    trades_count    INTEGER DEFAULT 0,
-    wins            INTEGER DEFAULT 0,
-    losses          INTEGER DEFAULT 0,
-    win_rate        REAL,
-    max_drawdown    REAL
-);
+# ═══════════════════════════════════════════════════════════════════════════
+# CONNECTION WRAPPER
+# ═══════════════════════════════════════════════════════════════════════════
 
--- -----------------------------------------------------------------------
--- rejections: trades suggested by Grok but blocked by the risk guardian
--- -----------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS rejections (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp       TEXT    NOT NULL DEFAULT (datetime('now')),
-    asset           TEXT    NOT NULL,
-    action          TEXT    NOT NULL,
-    reason          TEXT    NOT NULL,
-    decision_json   TEXT
-);
+class PgConnectionWrapper:
+    """Wraps a psycopg2 connection to provide an sqlite3-like interface.
 
--- -----------------------------------------------------------------------
--- equity_snapshots: per-cycle equity tracking for chart rendering
--- -----------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS equity_snapshots (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp       TEXT    NOT NULL DEFAULT (datetime('now')),
-    cycle_number    INTEGER NOT NULL,
-    equity          REAL    NOT NULL,
-    unrealized_pnl  REAL    DEFAULT 0.0,
-    realized_pnl    REAL    DEFAULT 0.0,
-    open_positions  INTEGER DEFAULT 0,
-    total_exposure  REAL    DEFAULT 0.0
-);
+    Allows existing code that calls ``db.execute(sql, params)`` to work
+    unchanged against PostgreSQL.  Placeholder conversion and
+    RealDictCursor creation happen transparently.
+    """
 
--- -----------------------------------------------------------------------
--- Indexes for common queries
--- -----------------------------------------------------------------------
-CREATE INDEX IF NOT EXISTS idx_trades_status     ON trades(status);
-CREATE INDEX IF NOT EXISTS idx_trades_asset      ON trades(asset);
-CREATE INDEX IF NOT EXISTS idx_trades_opened_at  ON trades(opened_at);
-CREATE INDEX IF NOT EXISTS idx_trades_closed_at  ON trades(closed_at);
-CREATE INDEX IF NOT EXISTS idx_positions_status  ON positions(status);
-CREATE INDEX IF NOT EXISTS idx_positions_asset   ON positions(asset);
-CREATE INDEX IF NOT EXISTS idx_grok_logs_cycle   ON grok_logs(cycle_number);
-CREATE INDEX IF NOT EXISTS idx_rejections_ts     ON rejections(timestamp);
-CREATE INDEX IF NOT EXISTS idx_equity_snap_ts    ON equity_snapshots(timestamp);
-"""
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    # --- sqlite3-compatible interface ---
+
+    def execute(self, query: str, params: tuple | dict = ()) -> Any:
+        """Execute *query* and return a cursor (like ``sqlite3.Connection.execute``)."""
+        pg_query = _convert_placeholders(query)
+        cursor = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute(pg_query, params)
+        return cursor
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    # --- pass-through for anything else ---
+
+    def cursor(self, *args: Any, **kwargs: Any) -> Any:
+        return self._conn.cursor(*args, **kwargs)
+
+    @property
+    def closed(self) -> bool:
+        return self._conn.closed  # type: ignore[no-any-return]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # DATABASE HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
+def get_db_connection() -> PgConnectionWrapper:
+    """Open a new PostgreSQL connection to Supabase.
 
-def get_db_connection(db_path: str | None = None) -> sqlite3.Connection:
-    """Open a new SQLite connection with sensible defaults.
-
-    Args:
-        db_path: Path to the database file.  Defaults to the project-wide
-                 ``DB_PATH`` from ``trading_config``.
-
-    Returns:
-        A ``sqlite3.Connection`` with row-factory set to ``sqlite3.Row``
-        so that results can be accessed by column name.
+    Returns a :class:`PgConnectionWrapper` so callers can use the same
+    ``db.execute(sql, params)`` pattern they used with SQLite.
     """
-    path = db_path or DB_PATH
-
-    # Ensure the parent directory exists
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")      # better concurrency
-    conn.execute("PRAGMA foreign_keys=ON")        # enforce FK constraints
-    conn.execute("PRAGMA busy_timeout=5000")      # wait up to 5s on lock
-    return conn
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL is not set. Add your Supabase connection string "
+            "to the .env file."
+        )
+    raw = psycopg2.connect(DATABASE_URL)
+    return PgConnectionWrapper(raw)
 
 
 @contextmanager
-def db_session(db_path: str | None = None) -> Generator[sqlite3.Connection, None, None]:
+def db_session() -> Generator[PgConnectionWrapper, None, None]:
     """Context manager that yields a connection and auto-commits/rollbacks.
 
     Usage::
@@ -170,7 +105,7 @@ def db_session(db_path: str | None = None) -> Generator[sqlite3.Connection, None
         with db_session() as conn:
             execute_query(conn, "INSERT INTO ...", (...))
     """
-    conn = get_db_connection(db_path)
+    conn = get_db_connection()
     try:
         yield conn
         conn.commit()
@@ -182,49 +117,36 @@ def db_session(db_path: str | None = None) -> Generator[sqlite3.Connection, None
 
 
 def init_db(db_path: str | None = None) -> None:
-    """Create all tables and indexes if they don't already exist.
+    """No-op — schema is managed via Supabase migrations.
 
-    Safe to call multiple times -- every statement uses
-    ``CREATE TABLE IF NOT EXISTS``.
-
-    Args:
-        db_path: Optional override for the database file location.
+    Kept for backwards compatibility with ``main.py`` which calls
+    ``init_db()`` at startup.
     """
-    conn = get_db_connection(db_path)
-    try:
-        conn.executescript(_SCHEMA_SQL)
-        conn.commit()
-        logger.info("Database initialized at {path}", path=db_path or DB_PATH)
-    except sqlite3.Error as exc:
-        logger.error("Failed to initialize database: {err}", err=exc)
-        raise
-    finally:
-        conn.close()
+    logger.info("Database initialized (Supabase PostgreSQL)")
 
 
 def execute_query(
-    conn: sqlite3.Connection,
+    conn: PgConnectionWrapper,
     query: str,
     params: tuple[Any, ...] | dict[str, Any] = (),
-) -> sqlite3.Cursor:
+) -> Any:
     """Execute a single SQL statement and return the cursor.
 
     Args:
-        conn: An open database connection.
-        query: The SQL statement (may contain ``?`` or ``:name`` placeholders).
+        conn: An open database connection (PgConnectionWrapper).
+        query: The SQL statement (may contain ``?`` placeholders).
         params: Positional or named parameters to bind.
 
     Returns:
-        The ``sqlite3.Cursor`` after execution.
-
-    Raises:
-        sqlite3.Error: Propagated after logging.
+        A psycopg2 cursor after execution.
     """
+    pg_query = _convert_placeholders(query)
     try:
-        cursor = conn.execute(query, params)
+        cursor = conn._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute(pg_query, params)
         conn.commit()
         return cursor
-    except sqlite3.Error as exc:
+    except Exception as exc:
         logger.error(
             "SQL error: {err} | query={q} | params={p}",
             err=exc,
@@ -235,24 +157,21 @@ def execute_query(
 
 
 def fetch_one(
-    conn: sqlite3.Connection,
+    conn: PgConnectionWrapper,
     query: str,
     params: tuple[Any, ...] | dict[str, Any] = (),
-) -> sqlite3.Row | None:
+) -> dict[str, Any] | None:
     """Execute a query and return the first row, or ``None``.
 
-    Args:
-        conn: An open database connection.
-        query: The SQL query.
-        params: Bind parameters.
-
-    Returns:
-        A ``sqlite3.Row`` or ``None`` if no rows match.
+    Returns a dict (via RealDictCursor) so callers can use
+    ``row["column_name"]`` access.
     """
+    pg_query = _convert_placeholders(query)
     try:
-        cursor = conn.execute(query, params)
+        cursor = conn._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute(pg_query, params)
         return cursor.fetchone()
-    except sqlite3.Error as exc:
+    except Exception as exc:
         logger.error(
             "SQL fetch_one error: {err} | query={q}",
             err=exc,
@@ -262,24 +181,20 @@ def fetch_one(
 
 
 def fetch_all(
-    conn: sqlite3.Connection,
+    conn: PgConnectionWrapper,
     query: str,
     params: tuple[Any, ...] | dict[str, Any] = (),
-) -> list[sqlite3.Row]:
+) -> list[dict[str, Any]]:
     """Execute a query and return all matching rows.
 
-    Args:
-        conn: An open database connection.
-        query: The SQL query.
-        params: Bind parameters.
-
-    Returns:
-        A list of ``sqlite3.Row`` objects (may be empty).
+    Returns a list of dicts (via RealDictCursor).
     """
+    pg_query = _convert_placeholders(query)
     try:
-        cursor = conn.execute(query, params)
+        cursor = conn._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute(pg_query, params)
         return cursor.fetchall()
-    except sqlite3.Error as exc:
+    except Exception as exc:
         logger.error(
             "SQL fetch_all error: {err} | query={q}",
             err=exc,

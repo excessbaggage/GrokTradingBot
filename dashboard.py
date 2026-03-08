@@ -1,35 +1,31 @@
 """
 Sentinel Trading Bot — Web Monitoring Dashboard
 
-A read-only Flask dashboard that connects to the bot's SQLite database
-and presents real-time trading status, portfolio metrics, positions,
-trade history, and Grok's analysis in a dark-themed trading terminal UI.
+A read-only Flask dashboard that connects to the Supabase PostgreSQL
+database and presents real-time trading status, portfolio metrics,
+positions, trade history, and Grok's analysis in a dark-themed
+trading terminal UI.
 
 Run alongside the bot as a separate process:
     python dashboard.py
 
 Then open http://localhost:5050 in your browser.
-
-The dashboard opens the database in read-only mode (?mode=ro), so it
-can never interfere with the bot's writes.  SQLite WAL journal mode
-(already enabled by the bot) allows concurrent readers without blocking.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask, jsonify, render_template_string
 
 from config.trading_config import (
     ASSET_UNIVERSE,
-    DB_PATH,
     LIVE_TRADING,
     STARTING_CAPITAL,
 )
+from data.database import get_db_connection
 
 # ═══════════════════════════════════════════════════════════════════════════
 # APP SETUP
@@ -41,15 +37,13 @@ DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "5050"))
 DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")
 
 
-def get_ro_db() -> sqlite3.Connection:
-    """Open a read-only connection to the bot's database."""
-    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_ro_db():
+    """Open a connection to the Supabase database."""
+    return get_db_connection()
 
 
-def rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict]:
-    """Convert sqlite3.Row objects to plain dicts for JSON serialization."""
+def rows_to_dicts(rows: list) -> list[dict]:
+    """Convert row objects to plain dicts for JSON serialization."""
     return [dict(row) for row in rows]
 
 
@@ -125,11 +119,18 @@ def api_portfolio():
 
         equity = STARTING_CAPITAL + unrealized_pnl + realized_pnl - total_fees
 
+        # --- Capital deployed in open positions ---
+        invested = 0.0
+        for t in open_trades:
+            size_pct = float(t["size_pct"] or 0.0)
+            invested += size_pct * equity
+        uninvested = equity - invested
+
         # --- Daily realized P&L ---
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         daily_pnl_row = db.execute(
             """SELECT COALESCE(SUM(pnl), 0) AS total_pnl
-               FROM trades WHERE status = 'closed' AND date(closed_at) = ?""",
+               FROM trades WHERE status = 'closed' AND closed_at::date = ?""",
             (today_str,),
         ).fetchone()
 
@@ -164,6 +165,9 @@ def api_portfolio():
             "total_return": round(
                 ((equity - STARTING_CAPITAL) / STARTING_CAPITAL * 100), 4
             ) if STARTING_CAPITAL > 0 else 0.0,
+            "invested": round(invested, 2),
+            "uninvested": round(uninvested, 2),
+            "invested_pct": round((invested / equity * 100), 2) if equity > 0 else 0.0,
             "daily_pnl": round(daily_pnl, 2),
             "daily_pnl_pct": round(daily_pnl_pct, 4),
             "weekly_pnl": round(weekly_pnl, 2),
@@ -207,7 +211,7 @@ def api_risk():
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         trade_count_row = db.execute(
             """SELECT COUNT(*) AS cnt FROM trades
-               WHERE date(opened_at) = ?""",
+               WHERE opened_at::date = ?""",
             (today_str,),
         ).fetchone()
 
@@ -481,11 +485,21 @@ DASHBOARD_HTML = """
     <main class="p-6 max-w-7xl mx-auto space-y-6">
 
         <!-- TOP STATS ROW -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
             <div class="card p-4">
                 <div class="text-dark-muted text-xs uppercase tracking-wide mb-1">Equity</div>
                 <div id="equity" class="text-2xl font-bold">$0.00</div>
                 <div id="total-return" class="text-sm text-dark-muted">+0.00%</div>
+            </div>
+            <div class="card p-4">
+                <div class="text-dark-muted text-xs uppercase tracking-wide mb-1">Invested</div>
+                <div id="invested" class="text-2xl font-bold text-accent">$0.00</div>
+                <div id="invested-pct" class="text-sm text-dark-muted">0% deployed</div>
+            </div>
+            <div class="card p-4">
+                <div class="text-dark-muted text-xs uppercase tracking-wide mb-1">Uninvested</div>
+                <div id="uninvested" class="text-2xl font-bold text-dark-text">$0.00</div>
+                <div id="uninvested-label" class="text-sm text-dark-muted">available</div>
             </div>
             <div class="card p-4">
                 <div class="text-dark-muted text-xs uppercase tracking-wide mb-1">Daily P&L</div>
@@ -730,6 +744,10 @@ DASHBOARD_HTML = """
         const retEl = document.getElementById('total-return');
         retEl.textContent = fmtPct(data.total_return);
         retEl.className = `text-sm ${pnlColor(data.total_return)}`;
+
+        document.getElementById('invested').textContent = fmtUsd(data.invested);
+        document.getElementById('invested-pct').textContent = `${(data.invested_pct || 0).toFixed(1)}% deployed`;
+        document.getElementById('uninvested').textContent = fmtUsd(data.uninvested);
 
         const dpEl = document.getElementById('daily-pnl');
         dpEl.textContent = fmtUsd(data.daily_pnl);
@@ -1000,7 +1018,7 @@ if __name__ == "__main__":
     print("=" * 50)
     print("  SENTINEL -- Trading Dashboard")
     print(f"  http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
-    print(f"  Database: {DB_PATH}")
+    print(f"  Database: Supabase PostgreSQL")
     print("  Mode: READ-ONLY")
     print("=" * 50)
     print("")

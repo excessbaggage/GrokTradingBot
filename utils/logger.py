@@ -5,6 +5,8 @@ Provides structured, colorized console output and rotated file logging.
 Trade decisions are logged as structured JSON for auditability.
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import json

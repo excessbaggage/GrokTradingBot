@@ -14,7 +14,6 @@ comes from ``OrderManager.paper_positions`` rather than the exchange API.
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
@@ -59,7 +58,7 @@ class PositionManager:
 
     def manage_open_positions(
         self,
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> list[dict[str, Any]]:
         """Check all open positions and update the database.
 
@@ -155,7 +154,7 @@ class PositionManager:
 
     def sync_positions(
         self,
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> dict[str, Any]:
         """Reconcile exchange positions with DB records (crash recovery).
 
@@ -292,7 +291,7 @@ class PositionManager:
         )
         return summary
 
-    def get_total_exposure(self, db_connection: sqlite3.Connection) -> float:
+    def get_total_exposure(self, db_connection: Any) -> float:
         """Compute total exposure as a fraction of portfolio equity.
 
         Sums the ``size_pct`` of all open positions in the database.
@@ -408,7 +407,7 @@ class PositionManager:
     def _detect_closed_positions(
         self,
         exchange_positions: list[dict[str, Any]],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> None:
         """Detect positions that were closed on-exchange (e.g. stop hit).
 
@@ -515,7 +514,7 @@ class PositionManager:
 
     def _check_holding_period(
         self,
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> None:
         """Force-close positions that exceed the maximum holding period.
 

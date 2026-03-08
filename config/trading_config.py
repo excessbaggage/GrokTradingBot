@@ -57,6 +57,7 @@ CANDLE_LOOKBACK = {
 
 # === Database ===
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "db", "trading_bot.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 # === Logging ===
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")

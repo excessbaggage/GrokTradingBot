@@ -2,13 +2,11 @@
 Portfolio state management.
 
 Tracks total equity, available margin, open positions, unrealized P&L,
-and historical performance metrics.  Synchronizes the local SQLite
-database with the live exchange state.
+and historical performance metrics.  Synchronizes the database with the live exchange state.
 """
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -21,7 +19,7 @@ class PortfolioManager:
     """Manages portfolio state and performance metrics.
 
     All methods that accept a *db* parameter expect an open
-    ``sqlite3.Connection`` (with ``row_factory = sqlite3.Row``).
+    ``Any`` (with ``row_factory = Any``).
 
     Usage::
 
@@ -253,7 +251,7 @@ class PortfolioManager:
     # -------------------------------------------------------------------
 
     @staticmethod
-    def get_daily_pnl(db: sqlite3.Connection) -> float:
+    def get_daily_pnl(db: Any) -> float:
         """Calculate total realized P&L from today's closed trades.
 
         Args:
@@ -269,14 +267,14 @@ class PortfolioManager:
             SELECT COALESCE(SUM(pnl), 0) AS total_pnl
             FROM trades
             WHERE status = 'closed'
-              AND date(closed_at) = ?
+              AND closed_at::date = ?
             """,
             (today_str,),
         )
         return float(row["total_pnl"]) if row else 0.0
 
     @staticmethod
-    def get_weekly_pnl(db: sqlite3.Connection) -> float:
+    def get_weekly_pnl(db: Any) -> float:
         """Calculate total realized P&L from this week's closed trades.
 
         Uses a rolling 7-day window from the current UTC time.
@@ -301,7 +299,7 @@ class PortfolioManager:
         return float(row["total_pnl"]) if row else 0.0
 
     @staticmethod
-    def get_peak_equity(db: sqlite3.Connection) -> float:
+    def get_peak_equity(db: Any) -> float:
         """Return the highest recorded ending equity from daily summaries.
 
         Falls back to ``STARTING_CAPITAL`` if no summaries exist yet.
@@ -343,7 +341,7 @@ class PortfolioManager:
         return (peak_equity - current_equity) / peak_equity
 
     @staticmethod
-    def get_consecutive_losses(db: sqlite3.Connection) -> int:
+    def get_consecutive_losses(db: Any) -> int:
         """Count the current streak of consecutive losing trades.
 
         Counts backwards from the most recent closed trade until a
@@ -383,7 +381,7 @@ class PortfolioManager:
     def sync_positions_with_exchange(
         self,
         exchange_client: Any,
-        db: sqlite3.Connection,
+        db: Any,
     ) -> None:
         """Synchronize the database ``positions`` table with the exchange.
 
@@ -411,7 +409,7 @@ class PortfolioManager:
                 "SELECT * FROM positions WHERE status = 'open'",
             )
 
-            db_asset_map: dict[str, sqlite3.Row] = {}
+            db_asset_map: dict[str, Any] = {}
             for db_pos in db_positions:
                 db_asset_map[db_pos["asset"].upper()] = db_pos
 

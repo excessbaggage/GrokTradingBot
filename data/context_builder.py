@@ -18,6 +18,7 @@ from utils.helpers import (
     utc_now,
 )
 from config.risk_config import RISK_PARAMS
+from data.liquidation_estimator import LiquidationEstimator, LiquidationHeatmap
 from utils.logger import logger
 
 
@@ -26,6 +27,9 @@ def build_context_prompt(
     portfolio: dict[str, Any],
     recent_trades: list[dict[str, Any]],
     risk_status: dict[str, Any],
+    performance_summary: str = "",
+    liquidation_data: dict[str, Any] | None = None,
+    regime_data: dict[str, Any] | None = None,
 ) -> str:
     """Assemble the dynamic context prompt for Grok.
 
@@ -41,6 +45,17 @@ def build_context_prompt(
         risk_status: Dict with ``daily_pnl``, ``weekly_pnl``,
             ``drawdown_from_peak``, ``trades_today``,
             ``consecutive_losses``, etc.
+        performance_summary: Pre-formatted performance analytics text
+            from ``TradePerformanceAnalyzer.generate_performance_summary()``.
+            If empty, the section is omitted.
+        liquidation_data: Optional dict keyed by asset symbol, each value
+            being a ``LiquidationHeatmap`` instance.  When provided,
+            liquidation cluster estimates are appended to each asset
+            section.
+        regime_data: Optional dict keyed by asset symbol mapping to
+            ``RegimeState`` objects from ``RegimeDetector.detect()``.
+            When provided, regime classification and strategy advice are
+            included in each asset's section.
 
     Returns:
         A fully formatted string ready to be passed as the Grok user
@@ -55,7 +70,15 @@ def build_context_prompt(
 
         # ── PER-ASSET MARKET DATA ─────────────────────────────────────
         for asset, data in market_data.items():
-            sections.append(_build_asset_section(asset, data))
+            asset_liq = (
+                liquidation_data.get(asset) if liquidation_data else None
+            )
+            asset_regime = (
+                regime_data.get(asset) if regime_data else None
+            )
+            sections.append(
+                _build_asset_section(asset, data, asset_liq, asset_regime)
+            )
 
         # ── PORTFOLIO ─────────────────────────────────────────────────
         sections.append(_build_portfolio_section(portfolio, risk_status))
@@ -70,6 +93,10 @@ def build_context_prompt(
         sections.append(
             _build_risk_status_section(risk_status, portfolio)
         )
+
+        # ── PERFORMANCE ANALYTICS ──────────────────────────────────────
+        if performance_summary:
+            sections.append(_build_performance_section(performance_summary))
 
         # ── TASK INSTRUCTION ──────────────────────────────────────────
         sections.append(_build_task_section())
@@ -95,7 +122,12 @@ def build_context_prompt(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _build_asset_section(asset: str, data: dict[str, Any]) -> str:
+def _build_asset_section(
+    asset: str,
+    data: dict[str, Any],
+    liquidation: Any = None,
+    regime: Any = None,
+) -> str:
     """Build the market-data block for a single asset."""
     price = data.get("price", 0)
     change_24h = data.get("24h_change_pct", 0)
@@ -139,6 +171,23 @@ def _build_asset_section(asset: str, data: dict[str, Any]) -> str:
         f"- **Volatility Regime**: {vol_regime.upper()}",
         f"- **Turtle Size Factor**: {turtle_factor:.2f}x (higher = safer to size up, lower = reduce size)",
     ]
+
+    # ── Liquidation Heatmap (optional) ────────────────────────────
+    if liquidation is not None:
+        estimator = LiquidationEstimator()
+        liq_text = estimator.format_for_context(liquidation)
+        lines.append(liq_text)
+
+    # ── Market Regime (optional) ─────────────────────────────────
+    if regime is not None:
+        lines.extend([
+            f"- **Market Regime**: {regime.regime.value.upper()} (confidence: {regime.confidence:.0%})",
+            f"- **Regime Advice**: {regime.strategy_recommendation['description']}",
+            f"- **ADX(14)**: {regime.adx:.1f} (+DI={regime.plus_di:.1f}, -DI={regime.minus_di:.1f})",
+            f"- **Choppiness Index**: {regime.choppiness_index:.1f}",
+            f"- **BB Width Percentile**: {regime.bb_width_percentile:.0f}%",
+        ])
+
     return "\n".join(lines)
 
 
@@ -258,6 +307,14 @@ def _build_risk_status_section(
         f"### Recent Losing Streak Count: {consecutive_losses}",
     ]
     return "\n".join(lines)
+
+
+def _build_performance_section(performance_summary: str) -> str:
+    """Build the performance analytics block from pre-formatted summary text."""
+    return (
+        "## YOUR PERFORMANCE ANALYTICS (Last 30 Days)\n"
+        f"{performance_summary}"
+    )
 
 
 def _build_task_section() -> str:
