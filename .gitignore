@@ -18,6 +18,8 @@ venv/
 
 # Database (keep the directory, ignore contents)
 db/*.db
+db/*.db-shm
+db/*.db-wal
 db/*.sqlite
 db/*.sqlite3
 
