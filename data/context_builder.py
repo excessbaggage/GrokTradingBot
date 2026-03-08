@@ -18,6 +18,7 @@ from utils.helpers import (
     utc_now,
 )
 from config.risk_config import RISK_PARAMS
+from data.correlation_risk import CorrelationRiskManager
 from data.liquidation_estimator import LiquidationEstimator, LiquidationHeatmap
 from utils.logger import logger
 
@@ -31,6 +32,7 @@ def build_context_prompt(
     liquidation_data: dict[str, Any] | None = None,
     regime_data: dict[str, Any] | None = None,
     sentiment_data: dict[str, Any] | None = None,
+    backtest_context: str = "",
 ) -> str:
     """Assemble the dynamic context prompt for Grok.
 
@@ -61,6 +63,9 @@ def build_context_prompt(
             ``SentimentData`` objects from ``XSentimentFetcher``.
             When provided, X/Twitter sentiment scores are included in
             each asset's section.
+        backtest_context: Optional pre-formatted strategy performance
+            text from ``WalkForwardBacktester.get_performance_context()``.
+            When provided, recent backtest insights are included.
 
     Returns:
         A fully formatted string ready to be passed as the Grok user
@@ -107,6 +112,22 @@ def build_context_prompt(
         # ── PERFORMANCE ANALYTICS ──────────────────────────────────────
         if performance_summary:
             sections.append(_build_performance_section(performance_summary))
+
+        # ── CORRELATION AWARENESS ─────────────────────────────────────
+        open_position_assets = [
+            p.get("asset", "") for p in portfolio.get("positions", [])
+        ]
+        correlation_section = _build_correlation_section(
+            market_data, open_position_assets,
+        )
+        if correlation_section:
+            sections.append(correlation_section)
+
+        # ── STRATEGY PERFORMANCE (BACKTEST) ──────────────────────────
+        if backtest_context:
+            sections.append(
+                "## STRATEGY PERFORMANCE INSIGHTS\n" + backtest_context
+            )
 
         # ── TASK INSTRUCTION ──────────────────────────────────────────
         sections.append(_build_task_section())
@@ -336,6 +357,41 @@ def _build_performance_section(performance_summary: str) -> str:
         "## YOUR PERFORMANCE ANALYTICS (Last 30 Days)\n"
         f"{performance_summary}"
     )
+
+
+def _build_correlation_section(
+    market_data: dict[str, dict[str, Any]],
+    open_positions: list[str],
+) -> str:
+    """Build the correlation awareness section.
+
+    Uses ``CorrelationRiskManager`` to identify highly correlated
+    asset pairs and warn Grok about concentration risk.
+
+    Args:
+        market_data: Full market data dict.
+        open_positions: List of currently open position asset symbols.
+
+    Returns:
+        Formatted string, or empty string if no meaningful data.
+    """
+    try:
+        summary = CorrelationRiskManager.get_correlation_summary(
+            market_data=market_data,
+            open_positions=open_positions,
+            threshold=0.70,
+        )
+        if summary and "No highly correlated" not in summary:
+            return f"## CORRELATION AWARENESS\n{summary}"
+        # Include even the "no correlations" message when positions are open
+        if open_positions:
+            return f"## CORRELATION AWARENESS\n{summary}"
+        return ""
+    except Exception as exc:
+        logger.debug(
+            "Could not build correlation section: {err}", err=exc,
+        )
+        return ""
 
 
 def _build_task_section() -> str:

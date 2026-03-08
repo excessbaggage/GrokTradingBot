@@ -105,6 +105,13 @@ class PortfolioManager:
                     }
                 )
 
+            # Validate equity -- zero or negative is suspicious
+            if total_equity <= 0:
+                total_equity = self._get_fallback_equity(
+                    reason="exchange returned zero/negative equity",
+                )
+                available_margin = total_equity - total_margin_used
+
             result = {
                 "total_equity": total_equity,
                 "available_margin": available_margin,
@@ -125,13 +132,74 @@ class PortfolioManager:
             logger.error(
                 "Failed to fetch portfolio from exchange: {err}", err=exc
             )
+            fallback_equity = self._get_fallback_equity(
+                reason=f"exchange fetch exception: {exc}",
+            )
             return {
-                "total_equity": 0.0,
-                "available_margin": 0.0,
+                "total_equity": fallback_equity,
+                "available_margin": fallback_equity,
                 "unrealized_pnl": 0.0,
                 "positions": [],
                 "margin_used": 0.0,
             }
+
+    # -------------------------------------------------------------------
+    # Equity fallback logic
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def _get_fallback_equity(reason: str = "") -> float:
+        """Return a safe fallback equity when the exchange returns bad data.
+
+        Fallback priority:
+            1. Last known good equity from ``equity_snapshots`` table.
+            2. ``STARTING_CAPITAL`` from config (absolute floor).
+
+        Logs a WARNING so operators can investigate.
+
+        Args:
+            reason: Why the fallback was triggered (for logging).
+
+        Returns:
+            A positive equity value that is safe to use for position sizing.
+        """
+        from config.trading_config import STARTING_CAPITAL
+        from data.database import get_db_connection
+
+        db = None
+        try:
+            db = get_db_connection()
+            row = db.execute(
+                """SELECT equity FROM equity_snapshots
+                   WHERE equity > 0
+                   ORDER BY timestamp DESC LIMIT 1"""
+            ).fetchone()
+            if row and float(row["equity"]) > 0:
+                fallback = float(row["equity"])
+                logger.warning(
+                    "Equity fallback triggered ({reason}). "
+                    "Using last known good equity: ${eq:.2f}",
+                    reason=reason, eq=fallback,
+                )
+                return fallback
+        except Exception as exc:
+            logger.warning(
+                "Could not read equity_snapshots for fallback: {err}",
+                err=exc,
+            )
+        finally:
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+
+        logger.warning(
+            "Equity fallback triggered ({reason}). "
+            "No snapshot available; using STARTING_CAPITAL: ${sc:.2f}",
+            reason=reason, sc=STARTING_CAPITAL,
+        )
+        return STARTING_CAPITAL
 
     # -------------------------------------------------------------------
     # Paper mode equity computation

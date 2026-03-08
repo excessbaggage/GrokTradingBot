@@ -15,7 +15,7 @@ Design principles:
     - Every rejection is logged with a clear reason.
     - The kill switch, once activated, requires manual reset.
 
-Check order (13 sequential checks -- ALL must pass):
+Check order (14 sequential checks -- ALL must pass):
     1.  kill_switch           -- global halt
     2.  daily_loss_limit      -- daily P&L gate
     3.  weekly_loss_limit     -- weekly P&L gate
@@ -29,6 +29,7 @@ Check order (13 sequential checks -- ALL must pass):
     11. risk_reward_ratio     -- minimum R:R
     12. time_between_trades   -- cooldown timer
     13. daily_trade_count     -- max trades per day
+    14. correlation_risk      -- reject correlated positions
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from loguru import logger
 
 from brain.models import RiskValidationResult, TradeDecision
 from config.risk_config import RISK_PARAMS
+from data.correlation_risk import CorrelationRiskManager
 
 
 class RiskGuardian:
@@ -96,6 +98,8 @@ class RiskGuardian:
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
         db_connection: Any,
+        market_data: dict[str, dict[str, Any]] | None = None,
+        open_positions: list[str] | None = None,
     ) -> RiskValidationResult:
         """Run the full risk-check gauntlet on a proposed trade decision.
 
@@ -108,6 +112,10 @@ class RiskGuardian:
                 ``weekly_pnl_pct``  -- this week's P&L as a decimal
                 ``total_exposure_pct`` -- sum of open position sizes / equity
             db_connection: SQLite connection for querying trade history.
+            market_data: Optional market data dict for correlation checks.
+                If not provided, correlation check uses group fallback only.
+            open_positions: Optional list of currently open position asset
+                symbols for correlation checks.
 
         Returns:
             ``RiskValidationResult`` with ``approved=True`` if the trade
@@ -130,6 +138,10 @@ class RiskGuardian:
                 reason="Close/adjust actions always permitted.",
             )
 
+        # Store context for check #14 (correlation risk)
+        self._current_market_data = market_data
+        self._current_open_positions = open_positions
+
         # Run every check in strict order.
         checks = [
             self._check_kill_switch,
@@ -145,6 +157,7 @@ class RiskGuardian:
             self._check_risk_reward_ratio,
             self._check_time_between_trades,
             self._check_daily_trade_count,
+            self._check_correlation_risk,
         ]
 
         for check_fn in checks:
@@ -165,7 +178,7 @@ class RiskGuardian:
             size=round(decision.size_pct * 100, 2),
             lev=decision.leverage,
         )
-        return RiskValidationResult(approved=True, reason="All 13 risk checks passed.")
+        return RiskValidationResult(approved=True, reason="All 14 risk checks passed.")
 
     # ------------------------------------------------------------------
     # Kill switch helpers
@@ -604,6 +617,34 @@ class RiskGuardian:
                     f"trades today. No more trades until the next UTC day."
                 ),
             )
+        return RiskValidationResult(approved=True)
+
+    def _check_correlation_risk(
+        self,
+        decision: TradeDecision,
+        portfolio_state: dict[str, Any],
+        db_connection: Any,
+    ) -> RiskValidationResult:
+        """Check 14: Reject if new asset is highly correlated with open positions."""
+        market_data = getattr(self, "_current_market_data", None)
+        open_positions = getattr(self, "_current_open_positions", None)
+
+        if not open_positions:
+            return RiskValidationResult(approved=True)
+
+        # Use the threshold from params if configured, otherwise default 0.75
+        threshold = self.params.get("correlation_threshold", 0.75)
+
+        is_allowed, reason = CorrelationRiskManager.check_correlation_risk(
+            new_asset=decision.asset,
+            open_positions=open_positions,
+            market_data=market_data or {},
+            threshold=threshold,
+        )
+
+        if not is_allowed:
+            return RiskValidationResult(approved=False, reason=reason)
+
         return RiskValidationResult(approved=True)
 
     # ------------------------------------------------------------------

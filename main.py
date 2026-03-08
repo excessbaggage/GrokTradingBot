@@ -120,6 +120,9 @@ def run_cycle(
     logger.info(f"=== CYCLE {cycle_number} START ===")
     _log_cycle_event(db, cycle_number, "cycle_start", f"Cycle {cycle_number} started")
 
+    # Record heartbeat so the monitor knows we're alive
+    notifier.record_heartbeat()
+
     try:
         # --- Step 1: Check kill switch ---
         if risk_guardian.kill_switch_active():
@@ -136,6 +139,23 @@ def run_cycle(
         # --- Step 3: Gather portfolio state ---
         logger.info("Fetching portfolio state...")
         portfolio = portfolio_mgr.fetch_portfolio_from_exchange(order_mgr.info)
+
+        # Guard: skip cycle if equity is suspiciously low
+        from config.trading_config import STARTING_CAPITAL
+        equity_floor = STARTING_CAPITAL * 0.01  # 1% of starting capital
+        if portfolio.get("total_equity", 0) < equity_floor:
+            logger.warning(
+                "Equity ${eq:.2f} is below safety floor ${floor:.2f} "
+                "(1% of STARTING_CAPITAL). Skipping cycle to prevent "
+                "corrupt position sizing.",
+                eq=portfolio.get("total_equity", 0),
+                floor=equity_floor,
+            )
+            _log_cycle_event(db, cycle_number, "equity_guard",
+                f"Cycle skipped: equity ${portfolio.get('total_equity', 0):.2f} "
+                f"below floor ${equity_floor:.2f}",
+                severity="warn")
+            return CYCLE_INTERVAL_MINUTES
 
         # Enrich portfolio with DB-derived metrics for risk checks
         portfolio["peak_equity"] = portfolio_mgr.get_peak_equity(db)
@@ -228,7 +248,7 @@ def run_cycle(
         grok_response = decision_parser.parse_response(raw_response)
         if grok_response is None:
             logger.error("Failed to parse Grok response. Skipping cycle.")
-            notifier.send_error_alert("Grok response parsing failed")
+            notifier.send_error_alert("Grok response parsing failed", severity="warning")
             return CYCLE_INTERVAL_MINUTES
 
         # --- Step 8: Log the full interaction ---
@@ -285,7 +305,7 @@ def run_cycle(
                             "fees": order_result.get("fees", 0.0),
                         }
                         trade_history.log_trade(db, trade_data)
-                        notifier.send_trade_alert(decision, order_result)
+                        notifier.send_trade_alert(decision, order_result, portfolio=portfolio)
                         logger.info(f"Trade executed: {order_result}")
                         _log_cycle_event(db, cycle_number, "trade_opened",
                             f"{decision.action} {decision.asset} @ ${order_result.get('fill_price', 0):,.2f}",
@@ -294,7 +314,8 @@ def run_cycle(
                     else:
                         logger.error(f"Order placement failed for {decision.asset}")
                         notifier.send_error_alert(
-                            f"Order placement failed: {decision.action} {decision.asset}"
+                            f"Order placement failed: {decision.action} {decision.asset}",
+                            severity="critical",
                         )
                 else:
                     logger.warning(f"REJECTED: {decision.action} {decision.asset} — {validation.reason}")
@@ -341,7 +362,7 @@ def run_cycle(
 
     except Exception as e:
         logger.exception(f"Cycle {cycle_number} error: {e}")
-        notifier.send_error_alert(f"Cycle {cycle_number} error: {e}")
+        notifier.send_error_alert(f"Cycle {cycle_number} error: {e}", severity="critical")
         return CYCLE_INTERVAL_MINUTES
     finally:
         db.close()
@@ -535,12 +556,12 @@ def _save_performance_cache(db, cycle_number):
 
 
 def _generate_daily_summary(db, portfolio) -> dict:
-    """Generate a daily performance summary.
+    """Generate an enhanced daily performance summary.
 
-    Returns keys matching what ``Notifier.send_daily_summary()`` expects:
-    ``date``, ``daily_pnl_pct``, ``equity``, ``peak_equity``,
-    ``trades_today``, ``wins``, ``losses``, ``win_rate``,
-    ``open_positions``, ``total_exposure_pct``.
+    Returns keys matching what ``Notifier.send_daily_summary()`` expects,
+    plus enhanced fields for richer reporting:
+    ``avg_rr``, ``best_trade_pnl``, ``worst_trade_pnl``,
+    ``current_streak``, ``weekly_equity_change_pct``.
     """
     from data.trade_history import TradeHistoryManager
 
@@ -553,7 +574,7 @@ def _generate_daily_summary(db, portfolio) -> dict:
     equity = portfolio.get("total_equity", 0)
     daily_pnl_pct = total_pnl / equity if equity > 0 else 0.0
 
-    return {
+    summary = {
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         "equity": equity,
         "peak_equity": portfolio.get("peak_equity", equity),
@@ -565,6 +586,41 @@ def _generate_daily_summary(db, portfolio) -> dict:
         "open_positions": len(portfolio.get("positions", [])),
         "total_exposure_pct": portfolio.get("total_exposure_pct", 0.0),
     }
+
+    # --- Enhanced fields ---
+    try:
+        # Average R:R for today's closed trades
+        rr_values = [
+            t.get("risk_reward_ratio", 0)
+            for t in trades_today_list
+            if t.get("risk_reward_ratio") is not None
+        ]
+        if rr_values:
+            summary["avg_rr"] = sum(rr_values) / len(rr_values)
+
+        # Best and worst trade P&L
+        pnl_pcts = [
+            t.get("pnl_pct", 0)
+            for t in trades_today_list
+            if t.get("pnl_pct") is not None
+        ]
+        if pnl_pcts:
+            summary["best_trade_pnl"] = max(pnl_pcts)
+            summary["worst_trade_pnl"] = min(pnl_pcts)
+
+        # Current streak from performance analyzer
+        analyzer = TradePerformanceAnalyzer()
+        streaks = analyzer.get_streak_analysis(db)
+        summary["current_streak"] = streaks.get("current_streak", 0)
+
+        # Weekly equity change
+        weekly_pnl = portfolio.get("weekly_pnl_pct")
+        if weekly_pnl is not None:
+            summary["weekly_equity_change_pct"] = weekly_pnl
+    except Exception as e:
+        logger.warning(f"Enhanced summary fields failed: {e}")
+
+    return summary
 
 
 def main():
@@ -640,10 +696,10 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     # Notify startup
-    notifier.send_risk_alert(
-        "bot_started",
-        f"Sentinel started in {'LIVE' if LIVE_TRADING else 'PAPER'} mode. "
-        f"Assets: {', '.join(ASSET_UNIVERSE)}",
+    notifier.send_bot_online(
+        mode="LIVE" if LIVE_TRADING else "PAPER",
+        assets=ASSET_UNIVERSE,
+        cycle_interval=CYCLE_INTERVAL_MINUTES,
     )
 
     # --- Main Loop ---
@@ -676,10 +732,12 @@ def main():
         while elapsed < sleep_seconds and not _shutdown_requested:
             time.sleep(min(10, sleep_seconds - elapsed))
             elapsed += 10
+            # Heartbeat check: alert if bot seems stuck
+            notifier.check_heartbeat(next_cycle_minutes)
 
     # Graceful shutdown
     logger.info("Shutting down Sentinel gracefully...")
-    notifier.send_risk_alert("bot_stopped", "Sentinel has been shut down.")
+    notifier.send_bot_offline()
     logger.info("Sentinel stopped. Goodbye.")
 
 

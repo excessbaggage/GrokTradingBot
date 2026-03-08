@@ -1622,7 +1622,7 @@ class TestNotificationFormatting:
             notifier.send_daily_summary(summary)
 
         message = mock_broadcast.call_args[0][0]
-        assert "DAILY SUMMARY" in message
+        assert "DAILY REPORT" in message
         assert "2026-03-07" in message
         assert "$10,230.00" in message
         assert "66.7%" in message  # win rate
@@ -1653,7 +1653,8 @@ class TestNotificationFormatting:
             notifier.send_error_alert("Failed to connect to Grok API: timeout")
 
         message = mock_broadcast.call_args[0][0]
-        assert "ERROR ALERT" in message
+        assert "ERROR" in message
+        assert "WARNING" in message  # default severity is warning
         assert "timeout" in message
         assert "Traceback" not in message
 

@@ -281,55 +281,75 @@ class OrderManager:
             entry_order_id = self._extract_order_id(result)
             fill_price = px  # Approximate; actual fill may differ
 
-            # Place stop-loss order (trigger order)
-            stop_order_id = ""
-            if decision.stop_loss and decision.stop_loss > 0:
-                try:
-                    stop_result = self.exchange.order(
-                        asset=asset,
-                        is_buy=not is_buy,  # Opposite side to close
-                        sz=sz,
-                        limit_px=decision.stop_loss,
-                        order_type={
-                            "trigger": {
-                                "triggerPx": str(decision.stop_loss),
-                                "isMarket": True,
-                                "tpsl": "sl",
-                            }
-                        },
-                        reduce_only=True,
-                    )
-                    stop_order_id = self._extract_order_id(stop_result)
-                except Exception as exc:
-                    logger.error(
-                        "Failed to place stop-loss for {asset}: {err}",
-                        asset=asset, err=exc,
-                    )
+            # Verify the entry order was actually filled on the exchange
+            fill_info = self._verify_fill(entry_order_id, asset)
+            if fill_info["status"] == "timeout":
+                logger.warning(
+                    "Entry order timed out for {asset} (oid={oid}). Order cancelled.",
+                    asset=asset, oid=entry_order_id,
+                )
+                return self._error_result(asset, f"Entry order timed out and was cancelled (oid={entry_order_id}).")
+            elif fill_info["status"] == "cancelled":
+                logger.warning(
+                    "Entry order was rejected/cancelled for {asset} (oid={oid}).",
+                    asset=asset, oid=entry_order_id,
+                )
+                return self._error_result(asset, f"Entry order was rejected by exchange (oid={entry_order_id}).")
+            elif fill_info["status"] == "partial":
+                # Partial fill -- adjust size and log
+                actual_sz = fill_info["filled_size"] if fill_info["filled_size"] > 0 else sz
+                logger.warning(
+                    "Partial fill for {asset}: requested={req} filled={filled}. "
+                    "Adjusting protective orders to filled size.",
+                    asset=asset, req=sz, filled=actual_sz,
+                )
+                sz = actual_sz
+                if fill_info["avg_price"] > 0:
+                    fill_price = fill_info["avg_price"]
+            else:
+                # Fully filled
+                if fill_info["avg_price"] > 0:
+                    fill_price = fill_info["avg_price"]
 
-            # Place take-profit order (trigger order)
-            tp_order_id = ""
-            if decision.take_profit and decision.take_profit > 0:
+            # Place protective orders (SL/TP) with retry logic
+            stop_order_id, tp_order_id = self._place_protective_orders(
+                asset=asset,
+                is_buy=is_buy,
+                sz=sz,
+                stop_loss=decision.stop_loss,
+                take_profit=decision.take_profit,
+            )
+
+            # Safety check: if protective orders failed, close the position
+            sl_required = decision.stop_loss and decision.stop_loss > 0
+            tp_required = decision.take_profit and decision.take_profit > 0
+            if (sl_required and not stop_order_id) or (tp_required and not tp_order_id):
+                logger.critical(
+                    "SAFETY ROLLBACK: Protective orders failed for {asset}. "
+                    "SL placed={sl_ok} TP placed={tp_ok}. "
+                    "Closing position to prevent unprotected exposure.",
+                    asset=asset,
+                    sl_ok=bool(stop_order_id),
+                    tp_ok=bool(tp_order_id),
+                )
                 try:
-                    tp_result = self.exchange.order(
+                    self._close_live_position(asset)
+                    logger.warning(
+                        "Position closed for {asset} after SL/TP failure (safety rollback).",
                         asset=asset,
-                        is_buy=not is_buy,
-                        sz=sz,
-                        limit_px=decision.take_profit,
-                        order_type={
-                            "trigger": {
-                                "triggerPx": str(decision.take_profit),
-                                "isMarket": True,
-                                "tpsl": "tp",
-                            }
-                        },
-                        reduce_only=True,
                     )
-                    tp_order_id = self._extract_order_id(tp_result)
-                except Exception as exc:
-                    logger.error(
-                        "Failed to place take-profit for {asset}: {err}",
-                        asset=asset, err=exc,
+                except Exception as close_exc:
+                    logger.critical(
+                        "CRITICAL: Failed to close unprotected position for {asset}: {err}. "
+                        "MANUAL INTERVENTION REQUIRED.",
+                        asset=asset, err=close_exc,
                     )
+                return self._error_result(
+                    asset,
+                    f"Protective orders failed; position rolled back for safety. "
+                    f"SL={'ok' if stop_order_id else 'FAILED'} "
+                    f"TP={'ok' if tp_order_id else 'FAILED'}",
+                )
 
             order_result = {
                 "order_id": entry_order_id,
@@ -491,7 +511,16 @@ class OrderManager:
 
         # Compute notional value for fee simulation:
         #   notional_usd = size_pct * equity * leverage
-        equity = portfolio_equity if portfolio_equity > 0 else 10_000.0  # fallback for tests
+        if portfolio_equity > 0:
+            equity = portfolio_equity
+        else:
+            from config.trading_config import STARTING_CAPITAL
+            equity = STARTING_CAPITAL
+            logger.warning(
+                "Paper order using STARTING_CAPITAL fallback (${sc:.2f}) "
+                "because portfolio_equity={pe}",
+                sc=STARTING_CAPITAL, pe=portfolio_equity,
+            )
         notional = decision.size_pct * equity * decision.leverage
         fees = notional * _paper_state.simulated_fee_rate
 
@@ -651,6 +680,251 @@ class OrderManager:
             pnl=round(pnl_pct * 100, 2),
         )
         return close_result
+
+    # ------------------------------------------------------------------
+    # Protective order placement (SL/TP with retry)
+    # ------------------------------------------------------------------
+
+    def _place_protective_orders(
+        self,
+        asset: str,
+        is_buy: bool,
+        sz: float,
+        stop_loss: float | None,
+        take_profit: float | None,
+        max_retries: int = 3,
+    ) -> tuple[str, str]:
+        """Place stop-loss and take-profit orders with exponential backoff retry.
+
+        If either order fails after all retries, returns an empty string for
+        that order ID.  The caller is responsible for deciding whether to roll
+        back the position.
+
+        Args:
+            asset: Asset symbol (e.g. ``"BTC"``).
+            is_buy: True if the entry was a buy (long).
+            sz: Position size in coins.
+            stop_loss: Stop-loss trigger price, or None/0 to skip.
+            take_profit: Take-profit trigger price, or None/0 to skip.
+            max_retries: Maximum retry attempts per order (default 3).
+
+        Returns:
+            Tuple of (stop_order_id, tp_order_id).  Empty string means
+            the order could not be placed.
+        """
+        stop_order_id = ""
+        tp_order_id = ""
+
+        if stop_loss and stop_loss > 0:
+            stop_order_id = self._place_trigger_order_with_retry(
+                asset=asset,
+                is_buy=not is_buy,
+                sz=sz,
+                trigger_price=stop_loss,
+                tpsl="sl",
+                label="stop-loss",
+                max_retries=max_retries,
+            )
+
+        if take_profit and take_profit > 0:
+            tp_order_id = self._place_trigger_order_with_retry(
+                asset=asset,
+                is_buy=not is_buy,
+                sz=sz,
+                trigger_price=take_profit,
+                tpsl="tp",
+                label="take-profit",
+                max_retries=max_retries,
+            )
+
+        return stop_order_id, tp_order_id
+
+    def _place_trigger_order_with_retry(
+        self,
+        asset: str,
+        is_buy: bool,
+        sz: float,
+        trigger_price: float,
+        tpsl: str,
+        label: str,
+        max_retries: int = 3,
+    ) -> str:
+        """Place a single trigger order (SL or TP) with exponential backoff.
+
+        Args:
+            asset: Asset symbol.
+            is_buy: Direction of the protective order (opposite of entry).
+            sz: Size in coins.
+            trigger_price: Trigger price for the order.
+            tpsl: ``"sl"`` or ``"tp"``.
+            label: Human-readable label for logging (e.g. ``"stop-loss"``).
+            max_retries: Maximum number of attempts.
+
+        Returns:
+            Order ID string, or empty string on failure.
+        """
+        if self.exchange is None:
+            logger.error("Cannot place {label}: exchange client not initialised.", label=label)
+            return ""
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                result = self.exchange.order(
+                    asset=asset,
+                    is_buy=is_buy,
+                    sz=sz,
+                    limit_px=trigger_price,
+                    order_type={
+                        "trigger": {
+                            "triggerPx": str(trigger_price),
+                            "isMarket": True,
+                            "tpsl": tpsl,
+                        }
+                    },
+                    reduce_only=True,
+                )
+                order_id = self._extract_order_id(result)
+                if attempt > 1:
+                    logger.info(
+                        "{label} placed on retry {attempt} for {asset}",
+                        label=label, attempt=attempt, asset=asset,
+                    )
+                return order_id
+
+            except Exception as exc:
+                if attempt < max_retries:
+                    backoff = 2 ** (attempt - 1)  # 1s, 2s, 4s
+                    logger.warning(
+                        "Failed to place {label} for {asset} (attempt {attempt}/{max}): "
+                        "{err}. Retrying in {backoff}s...",
+                        label=label, asset=asset, attempt=attempt,
+                        max=max_retries, err=exc, backoff=backoff,
+                    )
+                    time.sleep(backoff)
+                else:
+                    logger.critical(
+                        "CRITICAL: All {max} attempts to place {label} for {asset} "
+                        "failed. Last error: {err}",
+                        max=max_retries, label=label, asset=asset, err=exc,
+                    )
+
+        return ""
+
+    # ------------------------------------------------------------------
+    # Order fill verification (live mode)
+    # ------------------------------------------------------------------
+
+    def _verify_fill(
+        self,
+        order_id: str,
+        asset: str,
+        timeout_seconds: float = 30.0,
+        poll_interval: float = 2.0,
+    ) -> dict[str, Any]:
+        """Verify an order's fill status by querying the exchange.
+
+        Polls the exchange for the actual order status until the order is
+        filled, partially filled, or the timeout expires.
+
+        Args:
+            order_id: The order ID to verify.
+            asset: Asset symbol for the order.
+            timeout_seconds: Max time to wait for fill confirmation.
+            poll_interval: Seconds between status checks.
+
+        Returns:
+            Dict with keys:
+                ``status``: ``"filled"``, ``"partial"``, ``"cancelled"``, ``"timeout"``
+                ``filled_size``: Actual filled quantity (0 if not filled).
+                ``avg_price``: Average fill price (0 if not filled).
+                ``order_id``: The original order ID.
+        """
+        if self.info is None:
+            logger.warning("Info client unavailable; cannot verify fill for oid={oid}", oid=order_id)
+            return {"status": "unverified", "filled_size": 0.0, "avg_price": 0.0, "order_id": order_id}
+
+        address = HYPERLIQUID_WALLET_ADDRESS
+        start_time = time.time()
+
+        while (time.time() - start_time) < timeout_seconds:
+            try:
+                # Check if the order is still in open orders
+                open_orders = self.info.open_orders(address)
+                still_open = any(
+                    str(o.get("oid", "")) == order_id for o in open_orders
+                )
+
+                if not still_open:
+                    # Order is no longer open -- check order status for fill details
+                    try:
+                        order_status = self.info.query_order_by_oid(address, int(order_id))
+                        if isinstance(order_status, dict):
+                            status = order_status.get("status", "")
+                            filled_sz = float(order_status.get("szFilled", 0))
+                            total_sz = float(order_status.get("sz", 0))
+                            avg_px = float(order_status.get("avgPx", 0))
+
+                            if status == "filled" or (filled_sz > 0 and filled_sz >= total_sz):
+                                return {
+                                    "status": "filled",
+                                    "filled_size": filled_sz,
+                                    "avg_price": avg_px,
+                                    "order_id": order_id,
+                                }
+                            elif filled_sz > 0 and filled_sz < total_sz:
+                                return {
+                                    "status": "partial",
+                                    "filled_size": filled_sz,
+                                    "avg_price": avg_px,
+                                    "order_id": order_id,
+                                }
+                            else:
+                                return {
+                                    "status": "cancelled",
+                                    "filled_size": 0.0,
+                                    "avg_price": 0.0,
+                                    "order_id": order_id,
+                                }
+                    except Exception:
+                        # query_order_by_oid may not be available; assume filled
+                        # if the order disappeared from open orders
+                        return {
+                            "status": "filled",
+                            "filled_size": 0.0,
+                            "avg_price": 0.0,
+                            "order_id": order_id,
+                        }
+
+            except Exception as exc:
+                logger.warning(
+                    "Error verifying fill for oid={oid}: {err}",
+                    oid=order_id, err=exc,
+                )
+
+            time.sleep(poll_interval)
+
+        # Timeout -- order still open
+        logger.warning(
+            "Fill verification timed out for oid={oid} after {timeout}s. "
+            "Attempting to cancel.",
+            oid=order_id, timeout=timeout_seconds,
+        )
+
+        # Try to cancel the unfilled order
+        try:
+            self.cancel_order(order_id, asset)
+        except Exception as cancel_exc:
+            logger.error(
+                "Failed to cancel timed-out order oid={oid}: {err}",
+                oid=order_id, err=cancel_exc,
+            )
+
+        return {
+            "status": "timeout",
+            "filled_size": 0.0,
+            "avg_price": 0.0,
+            "order_id": order_id,
+        }
 
     # ------------------------------------------------------------------
     # Utilities

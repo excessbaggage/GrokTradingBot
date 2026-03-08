@@ -33,12 +33,15 @@ from backtesting.strategies import (
     momentum_strategy,
     simple_rsi_strategy,
 )
+from backtesting.walk_forward import WalkForwardBacktester, WalkForwardResult
 
 __all__ = [
     "BacktestMetrics",
     "BacktestResult",
     "BacktestSimulator",
     "HistoricalDataLoader",
+    "WalkForwardBacktester",
+    "WalkForwardResult",
     "mean_reversion_strategy",
     "momentum_strategy",
     "simple_rsi_strategy",
