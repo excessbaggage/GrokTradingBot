@@ -224,7 +224,8 @@ class TradeHistoryManager:
         )
         if row and row["opened_at"]:
             try:
-                dt = datetime.fromisoformat(row["opened_at"])
+                val = row["opened_at"]
+                dt = val if isinstance(val, datetime) else datetime.fromisoformat(val)
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
                 return dt

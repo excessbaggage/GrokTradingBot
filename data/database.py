@@ -130,7 +130,11 @@ def execute_query(
     query: str,
     params: tuple[Any, ...] | dict[str, Any] = (),
 ) -> Any:
-    """Execute a single SQL statement and return the cursor.
+    """Execute a single SQL statement, auto-commit, and return the cursor.
+
+    Auto-commits after execution so each call is its own transaction.
+    For multi-statement transactions, use ``conn.execute()`` directly
+    and call ``conn.commit()`` when the batch is complete.
 
     Args:
         conn: An open database connection (PgConnectionWrapper).

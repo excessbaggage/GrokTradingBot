@@ -179,11 +179,11 @@ class PositionManager:
                 "SELECT asset, side, size_pct, entry_price FROM trades WHERE status = 'open'"
             )
             for row in cursor.fetchall():
-                db_open[row[0]] = {
-                    "asset": row[0],
-                    "side": row[1],
-                    "size_pct": row[2],
-                    "entry_price": row[3],
+                db_open[row["asset"]] = {
+                    "asset": row["asset"],
+                    "side": row["side"],
+                    "size_pct": row["size_pct"],
+                    "entry_price": row["entry_price"],
                 }
         except Exception as exc:
             logger.error("Failed to read DB positions: {err}", err=exc)
@@ -304,10 +304,10 @@ class PositionManager:
         """
         try:
             cursor = db_connection.execute(
-                "SELECT COALESCE(SUM(size_pct), 0.0) FROM trades WHERE status = 'open'"
+                "SELECT COALESCE(SUM(size_pct), 0.0) AS total FROM trades WHERE status = 'open'"
             )
             row = cursor.fetchone()
-            return float(row[0]) if row else 0.0
+            return float(row["total"]) if row else 0.0
         except Exception as exc:
             logger.error("Failed to compute total exposure: {err}", err=exc)
             return 0.0
@@ -435,7 +435,13 @@ class PositionManager:
             return
 
         for row in db_open_rows:
-            asset, side, entry_price, stop_loss, take_profit, size_pct, leverage = row
+            asset = row["asset"]
+            side = row["side"]
+            entry_price = row["entry_price"]
+            stop_loss = row["stop_loss"]
+            take_profit = row["take_profit"]
+            size_pct = row["size_pct"]
+            leverage = row["leverage"]
 
             if asset in exchange_assets:
                 continue  # Still open on exchange
@@ -543,14 +549,22 @@ class PositionManager:
         now = datetime.now(timezone.utc)
 
         for row in open_rows:
-            asset, side, entry_price, size_pct, leverage, opened_at_str = row
+            asset = row["asset"]
+            side = row["side"]
+            entry_price = row["entry_price"]
+            size_pct = row["size_pct"]
+            leverage = row["leverage"]
+            opened_at_val = row["opened_at"]
 
-            if not opened_at_str:
+            if not opened_at_val:
                 continue
 
-            # Parse the opened_at timestamp
+            # Parse the opened_at timestamp (psycopg2 returns datetime objects)
             try:
-                opened_at = datetime.fromisoformat(opened_at_str)
+                if isinstance(opened_at_val, datetime):
+                    opened_at = opened_at_val
+                else:
+                    opened_at = datetime.fromisoformat(opened_at_val)
                 if opened_at.tzinfo is None:
                     opened_at = opened_at.replace(tzinfo=timezone.utc)
             except (ValueError, TypeError):

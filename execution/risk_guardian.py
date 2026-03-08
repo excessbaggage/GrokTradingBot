@@ -33,7 +33,6 @@ Check order (13 sequential checks -- ALL must pass):
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -96,7 +95,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Run the full risk-check gauntlet on a proposed trade decision.
 
@@ -204,7 +203,7 @@ class RiskGuardian:
     def calculate_risk_status(
         self,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> dict[str, Any]:
         """Compute a snapshot of remaining risk headroom.
 
@@ -259,7 +258,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Check 1: If the kill switch is engaged, reject everything."""
         if self._kill_switch:
@@ -276,7 +275,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Check 2: Reject if daily losses have reached the threshold."""
         daily_pnl_pct = portfolio_state.get("daily_pnl_pct", 0.0)
@@ -297,7 +296,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Check 3: Reject if weekly losses have reached the threshold."""
         weekly_pnl_pct = portfolio_state.get("weekly_pnl_pct", 0.0)
@@ -317,7 +316,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Check 4: If drawdown from peak exceeds limit, activate kill switch."""
         equity = portfolio_state.get("equity", 0.0)
@@ -343,7 +342,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Check 5: Single position size must not exceed the cap."""
         max_size = self.params["max_position_size_pct"]
@@ -362,7 +361,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Check 6: Total exposure (existing + proposed) must stay below cap."""
         current_exposure = portfolio_state.get("total_exposure_pct", 0.0)
@@ -384,7 +383,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Check 7: Leverage must not exceed the hard cap."""
         max_lev = self.params["max_leverage"]
@@ -403,7 +402,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Check 8: A stop-loss price must be defined."""
         if not self.params.get("require_stop_loss", True):
@@ -420,7 +419,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Check 9: Stop-loss distance from entry must be within bounds."""
         entry = decision.entry_price
@@ -449,7 +448,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Check 10: A take-profit price must be defined."""
         if not self.params.get("require_take_profit", True):
@@ -466,7 +465,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Check 11: Risk/reward ratio must meet the minimum.
 
@@ -541,7 +540,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Check 12: Enforce a minimum cooldown between consecutive trades."""
         min_minutes = self.params["min_time_between_trades_minutes"]
@@ -549,14 +548,15 @@ class RiskGuardian:
         try:
             cursor = db_connection.execute(
                 """
-                SELECT MAX(opened_at) FROM trades
+                SELECT MAX(opened_at) AS last_opened FROM trades
                 WHERE asset = ? AND status IN ('open', 'closed')
                 """,
                 (decision.asset,),
             )
             row = cursor.fetchone()
-            if row and row[0]:
-                last_trade_time = datetime.fromisoformat(row[0])
+            if row and row["last_opened"]:
+                val = row["last_opened"]
+                last_trade_time = val if isinstance(val, datetime) else datetime.fromisoformat(val)
                 now = datetime.now(timezone.utc)
                 if last_trade_time.tzinfo is None:
                     last_trade_time = last_trade_time.replace(tzinfo=timezone.utc)
@@ -590,7 +590,7 @@ class RiskGuardian:
         self,
         decision: TradeDecision,
         portfolio_state: dict[str, Any],
-        db_connection: sqlite3.Connection,
+        db_connection: Any,
     ) -> RiskValidationResult:
         """Check 13: Reject if the daily trade count cap has been reached."""
         max_trades = self.params["max_trades_per_day"]
@@ -610,11 +610,11 @@ class RiskGuardian:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _count_trades_today(self, db_connection: sqlite3.Connection) -> int:
+    def _count_trades_today(self, db_connection: Any) -> int:
         """Count the number of trades opened since midnight UTC today.
 
         Args:
-            db_connection: Active SQLite connection.
+            db_connection: Active database connection.
 
         Returns:
             Integer count of today's trades (0 if the table is missing).
@@ -627,11 +627,11 @@ class RiskGuardian:
 
         try:
             cursor = db_connection.execute(
-                "SELECT COUNT(*) FROM trades WHERE opened_at >= ?",
+                "SELECT COUNT(*) AS cnt FROM trades WHERE opened_at >= ?",
                 (today_start,),
             )
             row = cursor.fetchone()
-            return row[0] if row else 0
+            return row["cnt"] if row else 0
         except Exception as exc:
             logger.warning(
                 "Could not count today's trades: {err}", err=str(exc),

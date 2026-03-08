@@ -18,7 +18,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, g, jsonify, render_template_string
 
 from config.trading_config import (
     ASSET_UNIVERSE,
@@ -38,8 +38,22 @@ DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")
 
 
 def get_ro_db():
-    """Open a connection to the Supabase database."""
-    return get_db_connection()
+    """Get a database connection, cached on Flask's request-scoped ``g``.
+
+    The connection is automatically closed at the end of the request
+    by :func:`close_db`.
+    """
+    if "db" not in g:
+        g.db = get_db_connection()
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(exception=None):
+    """Close the database connection at the end of each request."""
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
 
 
 def rows_to_dicts(rows: list) -> list[dict]:
@@ -60,7 +74,7 @@ def api_status():
         row = db.execute(
             "SELECT * FROM grok_logs ORDER BY id DESC LIMIT 1"
         ).fetchone()
-        db.close()
+
 
         if row:
             return jsonify({
@@ -149,7 +163,7 @@ def api_portfolio():
             "SELECT COALESCE(MAX(equity), 0) AS peak FROM equity_snapshots"
         ).fetchone()
 
-        db.close()
+
 
         peak = max(float(peak_row["peak"]) if peak_row else 0, STARTING_CAPITAL, equity)
         drawdown = ((peak - equity) / peak * 100) if peak > 0 and equity < peak else 0.0
@@ -220,7 +234,7 @@ def api_risk():
             "SELECT COUNT(*) AS cnt FROM rejections"
         ).fetchone()
 
-        db.close()
+
 
         return jsonify({
             "total_exposure_pct": total_exposure * 100,
@@ -250,7 +264,7 @@ def api_positions():
                FROM trades WHERE status = 'open'
                ORDER BY opened_at DESC"""
         ).fetchall()
-        db.close()
+
 
         positions = []
         for row in rows:
@@ -281,7 +295,7 @@ def api_trades():
                       opened_at, closed_at
                FROM trades ORDER BY opened_at DESC LIMIT 50"""
         ).fetchall()
-        db.close()
+
         return jsonify({"trades": rows_to_dicts(rows)})
     except Exception as e:
         app.logger.error("API error: %s", e)
@@ -297,7 +311,7 @@ def api_analysis():
             """SELECT timestamp, response_text, decisions_json, cycle_number
                FROM grok_logs ORDER BY id DESC LIMIT 1"""
         ).fetchone()
-        db.close()
+
 
         if not row:
             return jsonify({"analysis": None})
@@ -340,7 +354,7 @@ def api_rejections():
             """SELECT timestamp, asset, action, reason
                FROM rejections ORDER BY timestamp DESC LIMIT 20"""
         ).fetchall()
-        db.close()
+
         return jsonify({"rejections": rows_to_dicts(rows)})
     except Exception as e:
         app.logger.error("API error: %s", e)
@@ -378,7 +392,7 @@ def api_equity_chart():
                     "open_positions": row["open_positions"],
                     "cycle_number": row["cycle_number"],
                 })
-            db.close()
+    
             return jsonify({"equity_curve": data})
 
         # Fall back to daily summaries
@@ -386,7 +400,7 @@ def api_equity_chart():
             """SELECT date, ending_equity, pnl, pnl_pct, max_drawdown
                FROM daily_summaries ORDER BY date ASC"""
         ).fetchall()
-        db.close()
+
 
         data = rows_to_dicts(rows)
 

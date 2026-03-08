@@ -1,7 +1,7 @@
 """
 Trade performance analytics for the Sentinel trading bot.
 
-Mines the SQLite trade history to produce actionable insights that
+Mines the PostgreSQL trade history to produce actionable insights that
 Grok can learn from -- strategy win rates, asset performance, timing
 patterns, R:R accuracy, streaks, and sizing efficiency.
 
@@ -15,7 +15,6 @@ from typing import Any
 
 from loguru import logger
 
-from config.trading_config import DB_PATH
 from data.database import fetch_all, fetch_one
 
 
@@ -29,8 +28,8 @@ class TradePerformanceAnalyzer:
         summary = analyzer.generate_performance_summary(db)
     """
 
-    def __init__(self, db_path: str | None = None) -> None:
-        self.db_path = db_path or DB_PATH
+    def __init__(self) -> None:
+        pass
 
     # ══════════════════════════════════════════════════════════════════
     # CORE ANALYSIS METHODS
@@ -627,12 +626,15 @@ class TradePerformanceAnalyzer:
         return cutoff.isoformat()
 
     @staticmethod
-    def _parse_iso(ts: str | None) -> datetime | None:
-        """Parse an ISO timestamp string, returning None on failure."""
+    def _parse_iso(ts: Any) -> datetime | None:
+        """Parse a timestamp (ISO string or datetime object), returning None on failure."""
         if not ts:
             return None
         try:
-            dt = datetime.fromisoformat(ts)
+            if isinstance(ts, datetime):
+                dt = ts
+            else:
+                dt = datetime.fromisoformat(ts)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt
@@ -640,13 +642,13 @@ class TradePerformanceAnalyzer:
             return None
 
     @staticmethod
-    def _calc_hold_hours(opened_at: str | None, closed_at: str | None) -> float | None:
-        """Calculate hold duration in hours between two ISO timestamps."""
+    def _calc_hold_hours(opened_at: Any, closed_at: Any) -> float | None:
+        """Calculate hold duration in hours between two timestamps."""
         if not opened_at or not closed_at:
             return None
         try:
-            open_dt = datetime.fromisoformat(opened_at)
-            close_dt = datetime.fromisoformat(closed_at)
+            open_dt = opened_at if isinstance(opened_at, datetime) else datetime.fromisoformat(opened_at)
+            close_dt = closed_at if isinstance(closed_at, datetime) else datetime.fromisoformat(closed_at)
             if open_dt.tzinfo is None:
                 open_dt = open_dt.replace(tzinfo=timezone.utc)
             if close_dt.tzinfo is None:

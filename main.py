@@ -33,7 +33,6 @@ from config.trading_config import (
     DISCORD_WEBHOOK_URL,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
-    DB_PATH,
     DAILY_SUMMARY_HOUR_UTC,
 )
 from config.risk_config import RISK_PARAMS
@@ -72,10 +71,15 @@ def validate_environment() -> bool:
     In paper mode, only XAI_API_KEY is strictly required — the Hyperliquid
     SDK keys are only needed for live trading.
     """
+    from config.trading_config import DATABASE_URL
+
     errors = []
 
     if not XAI_API_KEY:
         errors.append("XAI_API_KEY is not set")
+
+    if not DATABASE_URL:
+        errors.append("DATABASE_URL is not set (required for Supabase connection)")
 
     # Hyperliquid keys are only required in live mode
     if LIVE_TRADING:
