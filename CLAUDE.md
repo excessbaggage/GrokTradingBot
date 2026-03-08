@@ -1,7 +1,7 @@
 # Sentinel Trading Bot — Claude Code Project Context
 
 ## Project Overview
-Autonomous perpetual futures trading bot powered by xAI Grok API. Trades 17 perpetual futures (10 majors/L1/L2 + 7 meme coins) on Hyperliquid DEX. Agent name: **Sentinel** — active intraday trader. Asset universe is fully dynamic — edit `ASSET_UNIVERSE` in `config/trading_config.py` to add/remove assets. Live X/Twitter sentiment analysis via xAI Agent Tools API feeds real-time social signals into every trading decision.
+Autonomous perpetual futures trading bot powered by xAI Grok API. Trades 17 perpetual futures (10 majors/L1/L2 + 7 meme coins) on Hyperliquid DEX. Agent name: **Sentinel** — active intraday trader. Asset universe is fully dynamic — edit `ASSET_UNIVERSE` in `config/trading_config.py` to add/remove assets. Live X/Twitter sentiment analysis via xAI Responses API with built-in x_search feeds real-time social signals into every trading decision.
 
 - **Spec file**: `grok-trading-bot-spec.md` in project root
 - **Language**: Python 3.11+
@@ -19,7 +19,7 @@ Data:       data/database.py (PostgreSQL via psycopg2 + PgConnectionWrapper)
             data/portfolio_state.py (equity computation)
             data/trade_history.py (trade CRUD — all @staticmethod)
             data/context_builder.py (assembles Grok prompt context)
-            data/x_sentiment.py (live X/Twitter sentiment via xAI Agent Tools API)
+            data/x_sentiment.py (live X/Twitter sentiment via xAI Responses API)
 
 Brain:      brain/models.py (Pydantic v2 schemas — dynamic asset validation)
             brain/system_prompt.py (dynamic Grok system prompt from ASSET_UNIVERSE)

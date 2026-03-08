@@ -1344,18 +1344,23 @@ DASHBOARD_HTML = """
         while (stratEl.firstChild) stratEl.removeChild(stratEl.firstChild);
         if (p.strategy) {
             const strat = p.strategy;
+            const long = strat.long || {};
+            const short = strat.short || {};
+            const totalTrades = (long.count || 0) + (short.count || 0);
+            const totalPnl = (long.total_pnl || 0) + (short.total_pnl || 0);
+            const overallWR = totalTrades > 0 ? ((long.count || 0) * (long.win_rate || 0) + (short.count || 0) * (short.win_rate || 0)) / totalTrades * 100 : 0;
             const grid = document.createElement('div');
             grid.className = 'grid grid-cols-2 md:grid-cols-4 gap-4';
 
             const items = [
-                { label: 'Total Trades', value: strat.total_trades || 0 },
-                { label: 'Win Rate', value: fmtPct(strat.win_rate_pct || 0, false) },
-                { label: 'Avg Win', value: fmtUsd(strat.avg_win || 0), cls: 'text-profit' },
-                { label: 'Avg Loss', value: fmtUsd(strat.avg_loss || 0), cls: 'text-loss' },
-                { label: 'Long Win %', value: fmtPct(strat.long_win_rate_pct || 0, false) },
-                { label: 'Short Win %', value: fmtPct(strat.short_win_rate_pct || 0, false) },
-                { label: 'Best Trade', value: fmtUsd(strat.best_trade || 0), cls: 'text-profit' },
-                { label: 'Worst Trade', value: fmtUsd(strat.worst_trade || 0), cls: 'text-loss' },
+                { label: 'Total Trades', value: totalTrades },
+                { label: 'Win Rate', value: fmtPct(overallWR, false) },
+                { label: 'Total P&L', value: fmtUsd(totalPnl), cls: totalPnl >= 0 ? 'text-profit' : 'text-loss' },
+                { label: 'Best Strategy', value: (strat.best_strategy || '-').toUpperCase() },
+                { label: 'Long Win %', value: fmtPct((long.win_rate || 0) * 100, false) },
+                { label: 'Short Win %', value: fmtPct((short.win_rate || 0) * 100, false) },
+                { label: 'Long Avg P&L', value: fmtUsd(long.avg_pnl || 0), cls: (long.avg_pnl || 0) >= 0 ? 'text-profit' : 'text-loss' },
+                { label: 'Short Avg P&L', value: fmtUsd(short.avg_pnl || 0), cls: (short.avg_pnl || 0) >= 0 ? 'text-profit' : 'text-loss' },
             ];
             items.forEach(item => {
                 const card = document.createElement('div');
@@ -1397,7 +1402,7 @@ DASHBOARD_HTML = """
                 const tdTrades = document.createElement('td');
                 tdTrades.textContent = stats.count || 0;
                 const tdWR = document.createElement('td');
-                tdWR.textContent = fmtPct(stats.win_rate_pct || 0, false);
+                tdWR.textContent = fmtPct((stats.win_rate || 0) * 100, false);
                 const tdPnl = document.createElement('td');
                 const pnl = stats.total_pnl || 0;
                 tdPnl.className = pnlColor(pnl);
@@ -1423,8 +1428,8 @@ DASHBOARD_HTML = """
             const items = [
                 { label: 'Current Streak', value: sk.current_streak || 0,
                   cls: (sk.current_streak || 0) > 0 ? 'text-profit' : (sk.current_streak || 0) < 0 ? 'text-loss' : '' },
-                { label: 'Best Win Streak', value: sk.best_win_streak || 0, cls: 'text-profit' },
-                { label: 'Worst Loss Streak', value: sk.worst_loss_streak || 0, cls: 'text-loss' },
+                { label: 'Best Win Streak', value: sk.longest_win_streak || 0, cls: 'text-profit' },
+                { label: 'Worst Loss Streak', value: sk.longest_loss_streak || 0, cls: 'text-loss' },
             ];
             items.forEach(item => {
                 const card = document.createElement('div');

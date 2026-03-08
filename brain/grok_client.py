@@ -7,7 +7,7 @@ trading decisions.
 
 Features:
 - Automatic retries with exponential backoff (via tenacity)
-- Request timeout handling (30s per request)
+- Request timeout handling (120s per request)
 - Full request/response logging for auditability
 - Health check endpoint for connectivity verification
 """
@@ -42,10 +42,10 @@ class GrokClient:
 
     Args:
         api_key: The xAI API key for authentication.
-        model: The Grok model identifier (e.g., ``"grok-4"``).
+        model: The Grok model identifier (e.g., ``"grok-4-1-fast-reasoning"``).
         max_tokens: Maximum tokens in the response. Defaults to config value.
         temperature: Sampling temperature. Defaults to config value.
-        timeout: Per-request timeout in seconds. Defaults to ``30``.
+        timeout: Per-request timeout in seconds. Defaults to ``120``.
     """
 
     def __init__(

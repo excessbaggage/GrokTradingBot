@@ -395,6 +395,10 @@ def _log_grok_interaction(db, system_prompt, context, raw_response, parsed_respo
         )
         db.commit()
     except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
         logger.error(f"Failed to log Grok interaction: {e}")
 
 
@@ -417,6 +421,10 @@ def _log_rejection(db, decision, reason):
         )
         db.commit()
     except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
         logger.error(f"Failed to log rejection: {e}")
 
 
@@ -424,7 +432,7 @@ def _save_equity_snapshot(db, cycle_number, portfolio):
     """Save a per-cycle equity snapshot for the dashboard chart.
 
     Args:
-        db: Open SQLite connection.
+        db: Open PostgreSQL connection.
         cycle_number: Current cycle number.
         portfolio: Portfolio state dict with keys total_equity,
             unrealized_pnl, positions, margin_used.
@@ -469,6 +477,10 @@ def _save_equity_snapshot(db, cycle_number, portfolio):
             c=cycle_number, eq=equity, u=unrealized,
         )
     except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
         logger.error(f"Failed to save equity snapshot: {e}")
 
 
