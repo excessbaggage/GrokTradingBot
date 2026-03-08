@@ -30,6 +30,7 @@ def build_context_prompt(
     performance_summary: str = "",
     liquidation_data: dict[str, Any] | None = None,
     regime_data: dict[str, Any] | None = None,
+    sentiment_data: dict[str, Any] | None = None,
 ) -> str:
     """Assemble the dynamic context prompt for Grok.
 
@@ -56,6 +57,10 @@ def build_context_prompt(
             ``RegimeState`` objects from ``RegimeDetector.detect()``.
             When provided, regime classification and strategy advice are
             included in each asset's section.
+        sentiment_data: Optional dict keyed by asset symbol mapping to
+            ``SentimentData`` objects from ``XSentimentFetcher``.
+            When provided, X/Twitter sentiment scores are included in
+            each asset's section.
 
     Returns:
         A fully formatted string ready to be passed as the Grok user
@@ -76,8 +81,13 @@ def build_context_prompt(
             asset_regime = (
                 regime_data.get(asset) if regime_data else None
             )
+            asset_sentiment = (
+                sentiment_data.get(asset) if sentiment_data else None
+            )
             sections.append(
-                _build_asset_section(asset, data, asset_liq, asset_regime)
+                _build_asset_section(
+                    asset, data, asset_liq, asset_regime, asset_sentiment
+                )
             )
 
         # ── PORTFOLIO ─────────────────────────────────────────────────
@@ -127,6 +137,7 @@ def _build_asset_section(
     data: dict[str, Any],
     liquidation: Any = None,
     regime: Any = None,
+    sentiment: Any = None,
 ) -> str:
     """Build the market-data block for a single asset."""
     price = data.get("price", 0)
@@ -186,6 +197,16 @@ def _build_asset_section(
             f"- **ADX(14)**: {regime.adx:.1f} (+DI={regime.plus_di:.1f}, -DI={regime.minus_di:.1f})",
             f"- **Choppiness Index**: {regime.choppiness_index:.1f}",
             f"- **BB Width Percentile**: {regime.bb_width_percentile:.0f}%",
+        ])
+
+    # ── X Sentiment (optional) ─────────────────────────────────
+    if sentiment is not None and hasattr(sentiment, "score"):
+        topics_str = ", ".join(sentiment.key_topics[:3]) if sentiment.key_topics else "N/A"
+        lines.extend([
+            f"- **X Sentiment Score**: {sentiment.score:+.2f} (-1.0 bearish to +1.0 bullish)",
+            f"- **X Sentiment Momentum**: {sentiment.momentum.upper()}",
+            f"- **X Discussion Volume**: {sentiment.volume.upper()}",
+            f"- **Key X Topics**: {topics_str}",
         ])
 
     return "\n".join(lines)

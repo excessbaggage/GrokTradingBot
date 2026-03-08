@@ -37,7 +37,17 @@ GROK_MAX_TOKENS = 4096
 GROK_TEMPERATURE = 0.5  # Moderate temperature for varied trade ideas (was 0.3 in conservative mode)
 
 # === Asset Universe ===
-ASSET_UNIVERSE = ["BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "ARB", "OP", "SUI", "APT"]
+ASSET_UNIVERSE = [
+    # Majors + L1/L2
+    "BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "ARB", "OP", "SUI", "APT",
+    # Meme coins
+    "PEPE", "SHIB", "WIF", "BONK", "FLOKI", "TRUMP", "PENGU",
+]
+
+# === X Sentiment Settings ===
+X_SENTIMENT_ENABLED = os.getenv("X_SENTIMENT_ENABLED", "True").lower() == "true"
+X_SENTIMENT_MODEL = os.getenv("X_SENTIMENT_MODEL", "grok-3-mini")
+X_SENTIMENT_CACHE_MINUTES = 5  # Reuse cached sentiment within this window
 
 # === Hyperliquid Settings ===
 HYPERLIQUID_MAINNET_URL = "https://api.hyperliquid.xyz"

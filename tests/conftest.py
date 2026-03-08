@@ -387,6 +387,9 @@ def _build_sample_grok_response_dict(
     _extra_prices = {
         "DOGE": (0.12, 0.18), "AVAX": (30.0, 40.0), "LINK": (15.0, 22.0),
         "ARB": (1.0, 1.5), "OP": (2.0, 3.0), "SUI": (1.5, 2.2), "APT": (7.0, 11.0),
+        "PEPE": (0.000010, 0.000015), "SHIB": (0.000020, 0.000030),
+        "WIF": (2.0, 3.0), "BONK": (0.000025, 0.000040),
+        "FLOKI": (0.00015, 0.00025), "TRUMP": (12.0, 20.0), "PENGU": (0.010, 0.020),
     }
     for asset in ASSET_UNIVERSE:
         key = asset.lower()

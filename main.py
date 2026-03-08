@@ -34,6 +34,7 @@ from config.trading_config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
     DAILY_SUMMARY_HOUR_UTC,
+    X_SENTIMENT_ENABLED,
 )
 from config.risk_config import RISK_PARAMS
 from utils.logger import setup_logger
@@ -182,6 +183,19 @@ def run_cycle(
         except Exception as e:
             logger.warning(f"Liquidation estimation failed: {e}")
 
+        # --- Step 4e: Fetch X sentiment ---
+        sentiment_data = {}
+        if X_SENTIMENT_ENABLED:
+            try:
+                from data.x_sentiment import XSentimentFetcher
+                sentiment_fetcher = XSentimentFetcher(api_key=XAI_API_KEY)
+                sentiment_data = sentiment_fetcher.fetch_sentiment(
+                    list(market_data.keys())
+                )
+                logger.info(f"X sentiment fetched for {len(sentiment_data)} assets")
+            except Exception as e:
+                logger.warning(f"X sentiment fetch failed: {e}")
+
         # --- Step 5: Build context prompt ---
         context = build_context_prompt(
             market_data=market_data,
@@ -191,6 +205,7 @@ def run_cycle(
             performance_summary=performance_summary,
             liquidation_data=liquidation_data,
             regime_data=regime_data,
+            sentiment_data=sentiment_data,
         )
 
         # --- Step 6: Query Grok ---

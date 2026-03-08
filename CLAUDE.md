@@ -1,7 +1,7 @@
 # Sentinel Trading Bot — Claude Code Project Context
 
 ## Project Overview
-Autonomous perpetual futures trading bot powered by xAI Grok API. Trades 10 perpetual futures (BTC, ETH, SOL, DOGE, AVAX, LINK, ARB, OP, SUI, APT) on Hyperliquid DEX. Agent name: **Sentinel** — active intraday trader. Asset universe is fully dynamic — edit `ASSET_UNIVERSE` in `config/trading_config.py` to add/remove assets.
+Autonomous perpetual futures trading bot powered by xAI Grok API. Trades 17 perpetual futures (10 majors/L1/L2 + 7 meme coins) on Hyperliquid DEX. Agent name: **Sentinel** — active intraday trader. Asset universe is fully dynamic — edit `ASSET_UNIVERSE` in `config/trading_config.py` to add/remove assets. Live X/Twitter sentiment analysis via xAI Agent Tools API feeds real-time social signals into every trading decision.
 
 - **Spec file**: `grok-trading-bot-spec.md` in project root
 - **Language**: Python 3.11+
@@ -19,6 +19,7 @@ Data:       data/database.py (PostgreSQL via psycopg2 + PgConnectionWrapper)
             data/portfolio_state.py (equity computation)
             data/trade_history.py (trade CRUD — all @staticmethod)
             data/context_builder.py (assembles Grok prompt context)
+            data/x_sentiment.py (live X/Twitter sentiment via xAI Agent Tools API)
 
 Brain:      brain/models.py (Pydantic v2 schemas — dynamic asset validation)
             brain/system_prompt.py (dynamic Grok system prompt from ASSET_UNIVERSE)
@@ -50,10 +51,11 @@ Dashboard:  dashboard.py (Flask read-only web UI on port 5050)
 python -m pytest tests/ -v --tb=short
 ```
 
-- **126 tests** across 3 files, all pass in <1s
+- **Tests** across 4 files, all pass in <1s
 - `test_risk_guardian.py` — 32 tests covering all 13 risk checks
 - `test_decision_parser.py` — 20 tests for JSON parsing + Pydantic validation
-- `test_integration.py` — 74 integration tests (full cycle simulation, DB roundtrip, error recovery, etc.)
+- `test_integration.py` — 74+ integration tests (full cycle simulation, DB roundtrip, error recovery, etc.)
+- `test_x_sentiment.py` — X sentiment fetcher tests (parsing, caching, error handling, context integration)
 - Tests use in-memory SQLite and mocks — **no API keys needed**
 
 ## Dependencies
@@ -65,14 +67,16 @@ hyperliquid-python-sdk, openai, pydantic>=2.0, loguru, tenacity, pandas, numpy, 
 ## Environment Variables (.env)
 
 ```
-XAI_API_KEY=           # Required: xAI/Grok API key
-GROK_MODEL=grok-3-mini # Grok model to use
+XAI_API_KEY=           # Required: xAI/Grok API key (also used for X sentiment)
+GROK_MODEL=grok-4      # Grok model for trading decisions
 DATABASE_URL=          # Required: Supabase PostgreSQL connection string
 LIVE_TRADING=False     # NEVER set True without reading the spec
 STARTING_CAPITAL=1000  # Paper trading starting capital
 CYCLE_INTERVAL_MINUTES=15
 HYPERLIQUID_WALLET_ADDRESS=  # Required for live mode only
 HYPERLIQUID_PRIVATE_KEY=     # Required for live mode only
+X_SENTIMENT_ENABLED=True     # Enable/disable live X sentiment fetching
+X_SENTIMENT_MODEL=grok-3-mini # Model for sentiment analysis (cheap/fast)
 ```
 
 ## Recent Work (March 2026)
