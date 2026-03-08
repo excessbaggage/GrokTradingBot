@@ -650,28 +650,52 @@ DASHBOARD_HTML = """
             </div>
         </div>
 
-        <!-- RECENT TRADES -->
-        <div class="card p-4">
-            <div class="text-dark-muted text-xs uppercase tracking-wide mb-3">Recent Trades</div>
-            <div class="scrollable">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Time</th>
-                            <th>Asset</th>
-                            <th>Action</th>
-                            <th>Side</th>
-                            <th>Size</th>
-                            <th>Entry</th>
-                            <th>Exit</th>
-                            <th>P&L</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody id="trades-table">
-                        <tr><td colspan="9" class="text-center text-dark-muted py-8">No trades yet</td></tr>
-                    </tbody>
-                </table>
+        <!-- RECENT TRADES + OPEN POSITIONS -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="card p-4">
+                <div class="text-dark-muted text-xs uppercase tracking-wide mb-3">Recent Trades</div>
+                <div class="scrollable">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Asset</th>
+                                <th>Action</th>
+                                <th>Side</th>
+                                <th>Size</th>
+                                <th>Entry</th>
+                                <th>Exit</th>
+                                <th>P&L</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trades-table">
+                            <tr><td colspan="9" class="text-center text-dark-muted py-8">No trades yet</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- OPEN POSITIONS -->
+            <div class="card p-4">
+                <div class="text-dark-muted text-xs uppercase tracking-wide mb-3">Open Positions</div>
+                <div class="scrollable">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Asset</th>
+                                <th>Side</th>
+                                <th>Size</th>
+                                <th>Leverage</th>
+                                <th>Entry</th>
+                                <th>uPnL</th>
+                            </tr>
+                        </thead>
+                        <tbody id="positions-table">
+                            <tr><td colspan="6" class="text-center text-dark-muted py-8">No open positions</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
 
@@ -721,37 +745,11 @@ DASHBOARD_HTML = """
             </div>
         </div>
 
-        <!-- POSITIONS + GROK ANALYSIS -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-            <!-- OPEN POSITIONS -->
-            <div class="card p-4">
-                <div class="text-dark-muted text-xs uppercase tracking-wide mb-3">Open Positions</div>
-                <div class="scrollable">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Asset</th>
-                                <th>Side</th>
-                                <th>Size</th>
-                                <th>Leverage</th>
-                                <th>Entry</th>
-                                <th>uPnL</th>
-                            </tr>
-                        </thead>
-                        <tbody id="positions-table">
-                            <tr><td colspan="6" class="text-center text-dark-muted py-8">No open positions</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- GROK ANALYSIS -->
-            <div class="card p-4">
-                <div class="text-dark-muted text-xs uppercase tracking-wide mb-3">Latest Grok Analysis</div>
-                <div id="grok-analysis" class="text-sm space-y-3">
-                    <div class="text-dark-muted">Waiting for first cycle...</div>
-                </div>
+        <!-- GROK ANALYSIS -->
+        <div class="card p-4">
+            <div class="text-dark-muted text-xs uppercase tracking-wide mb-3">Latest Grok Analysis</div>
+            <div id="grok-analysis" class="text-sm space-y-3">
+                <div class="text-dark-muted">Waiting for first cycle...</div>
             </div>
         </div>
 
