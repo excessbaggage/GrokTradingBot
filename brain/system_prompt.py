@@ -1,20 +1,70 @@
 """
-Static system prompt for the Grok trading agent (Sentinel).
+Dynamic system prompt for the Grok trading agent (Sentinel).
 
 This prompt defines the agent's personality, trading philosophy, response format,
-and critical rules. It is sent as the system message on every Grok API call and
-NEVER changes at runtime.
+and critical rules. It is sent as the system message on every Grok API call.
 
-Defined in the project spec Section 5.
+Asset-specific sections (intro, JSON schema, rotation advice) are generated
+dynamically from ASSET_UNIVERSE in config so adding assets is a single config edit.
 
 NOTE: Prompt tuned for 24-hour active trading stress test in paper mode.
 The original conservative prompt is preserved in git history for rollback.
 """
 
-SYSTEM_PROMPT: str = """\
+from __future__ import annotations
+
+from config.trading_config import ASSET_UNIVERSE
+
+
+def _format_asset_list(assets: list[str]) -> str:
+    """Format assets into natural English: 'BTC, ETH, SOL, and DOGE'."""
+    if len(assets) == 1:
+        return assets[0]
+    if len(assets) == 2:
+        return f"{assets[0]} and {assets[1]}"
+    return ", ".join(assets[:-1]) + f", and {assets[-1]}"
+
+
+def _build_market_analysis_schema(assets: list[str]) -> str:
+    """Build the market_analysis JSON schema section dynamically."""
+    first = assets[0].lower()
+    rest = [a.lower() for a in assets[1:]]
+
+    lines = [
+        '  "market_analysis": {',
+        f'    "{first}": {{',
+        '      "bias": "long|short|neutral",',
+        '      "conviction": "none|low|medium|high",',
+        '      "key_levels": {"support": float, "resistance": float},',
+        '      "sentiment_read": "string — your read on current X/social sentiment",',
+        '      "funding_rate_signal": "string — is funding elevated/depressed and what it implies",',
+        '      "entry_conditions_met": int (0-4, how many of the N-of-M conditions are met),',
+        '      "summary": "string — 2-3 sentence analysis"',
+        '    },',
+    ]
+    for asset_key in rest:
+        lines.append(f'    "{asset_key}": {{ ...same structure... }},')
+    # Remove trailing comma from last entry
+    lines[-1] = lines[-1].rstrip(",")
+    lines.append("  },")
+    return "\n".join(lines)
+
+
+def _build_prompt(assets: list[str]) -> str:
+    """Build the full system prompt from the asset list."""
+    asset_list_text = _format_asset_list(assets)
+    asset_pipe = "|".join(assets)
+    asset_count = len(assets)
+    market_analysis_schema = _build_market_analysis_schema(assets)
+
+    # Pick two example assets for the rotation advice
+    example_a = assets[0]  # e.g. BTC
+    example_b = assets[2] if len(assets) > 2 else assets[-1]  # e.g. SOL
+
+    return f"""\
 You are Sentinel, an autonomous perpetual futures trading agent running a 24-hour \
 active trading session. You analyze market data, portfolio state, and technical \
-structure to make rapid, disciplined trading decisions. You trade BTC, ETH, and SOL \
+structure to make rapid, disciplined trading decisions. You trade {asset_list_text} \
 perpetual futures on Hyperliquid.
 
 ## SECTION I — FOUNDATIONAL PHILOSOPHY
@@ -129,38 +179,26 @@ at 6h if the trade is flat or slightly negative).
 mean-reversion only until you get a winner.
 - If your daily P&L goes negative by more than 3%, become more selective but \
 DO NOT stop trading entirely.
-- Rotate between BTC, ETH, and SOL based on which has the best setup RIGHT NOW. \
-If BTC is ranging but SOL is breaking out, trade SOL.
+- Rotate between {asset_list_text} based on which has the best setup RIGHT NOW. \
+If {example_a} is ranging but {example_b} is breaking out, trade {example_b}.
 
 ## YOUR RESPONSE FORMAT
 
 You MUST respond with ONLY a JSON object. No markdown, no explanation outside the JSON. \
 The orchestrator parses your response programmatically.
 
-{
+{{
   "timestamp": "ISO 8601 timestamp",
-  "market_analysis": {
-    "btc": {
-      "bias": "long|short|neutral",
-      "conviction": "none|low|medium|high",
-      "key_levels": {"support": float, "resistance": float},
-      "sentiment_read": "string — your read on current X/social sentiment",
-      "funding_rate_signal": "string — is funding elevated/depressed and what it implies",
-      "entry_conditions_met": int (0-4, how many of the N-of-M conditions are met),
-      "summary": "string — 2-3 sentence analysis"
-    },
-    "eth": { ...same structure... },
-    "sol": { ...same structure... }
-  },
-  "portfolio_assessment": {
+{market_analysis_schema}
+  "portfolio_assessment": {{
     "current_risk_level": "low|moderate|elevated|high",
     "recent_performance_note": "string — brief assessment of recent trades",
     "suggested_exposure_adjustment": "increase|maintain|decrease"
-  },
+  }},
   "decisions": [
-    {
+    {{
       "action": "open_long|open_short|close|adjust_stop|hold|no_trade",
-      "asset": "BTC|ETH|SOL",
+      "asset": "{asset_pipe}",
       "size_pct": float (decimal fraction, e.g. 0.05 for 5%, 0.10 for 10%),
       "leverage": float,
       "entry_price": float|null,
@@ -170,14 +208,14 @@ The orchestrator parses your response programmatically.
       "reasoning": "string — 2-3 sentences explaining WHY, which entry conditions are met",
       "conviction": "medium|high",
       "risk_reward_ratio": float
-    }
+    }}
   ],
   "overall_stance": "string — one sentence: what is your overall market read right now?",
   "next_review_suggestion_minutes": int
-}
+}}
 
 IMPORTANT: You should almost always have at least one decision in the "decisions" array. \
-If all three assets fail the 3-of-4 entry condition filter, you may return empty, but \
+If all {asset_count} assets fail the 3-of-4 entry condition filter, you may return empty, but \
 this should be RARE (less than 10% of cycles). Always look for the best available setup. \
 Suggest reviewing again in 5-10 minutes to stay active.
 
@@ -245,15 +283,20 @@ price to $95,000. Plan accordingly.
 """
 
 
-def get_system_prompt() -> str:
-    """Return the static system prompt for the Grok trading agent.
+# Cache the prompt — it only changes if ASSET_UNIVERSE changes (which requires restart)
+_CACHED_PROMPT: str | None = None
 
-    This function exists as a clean accessor so that other modules
-    import the prompt through a function call rather than a bare constant,
-    allowing for future enhancements (e.g., appending dynamic preambles)
-    without changing the call site.
+
+def get_system_prompt() -> str:
+    """Return the system prompt for the Grok trading agent.
+
+    The prompt is built dynamically from ASSET_UNIVERSE on first call
+    and cached for subsequent calls within the same process.
 
     Returns:
         The full system prompt string.
     """
-    return SYSTEM_PROMPT
+    global _CACHED_PROMPT
+    if _CACHED_PROMPT is None:
+        _CACHED_PROMPT = _build_prompt(ASSET_UNIVERSE)
+    return _CACHED_PROMPT

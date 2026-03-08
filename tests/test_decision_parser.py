@@ -204,18 +204,18 @@ class TestParseMissingFields:
 
 
 class TestParseInvalidAction:
-    """Invalid action types should be caught by Pydantic validation."""
+    """Invalid action types should be filtered out by extract_decisions."""
 
-    def test_parse_invalid_action(
+    def test_invalid_action_parses_but_not_actionable(
         self,
         parser: DecisionParser,
         sample_grok_response_dict: dict,
     ) -> None:
-        """An action like 'yolo_trade' is not in the valid enum."""
+        """An action like 'yolo_trade' parses but is not extracted as actionable."""
         bad = sample_grok_response_dict.copy()
         bad["decisions"] = [
             {
-                "action": "yolo_trade",  # Invalid action
+                "action": "yolo_trade",  # Not in _ACTIONABLE_ACTIONS
                 "asset": "BTC",
                 "size_pct": 0.05,
                 "leverage": 2.0,
@@ -229,7 +229,9 @@ class TestParseInvalidAction:
             }
         ]
         result = parser.parse_response(json.dumps(bad))
-        assert result is None
+        assert result is not None  # Parses fine (action is just a string)
+        actionable = parser.extract_decisions(result)
+        assert len(actionable) == 0  # But filtered out as not actionable
 
 
 # ======================================================================

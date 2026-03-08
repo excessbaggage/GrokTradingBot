@@ -37,7 +37,7 @@ GROK_MAX_TOKENS = 4096
 GROK_TEMPERATURE = 0.5  # Moderate temperature for varied trade ideas (was 0.3 in conservative mode)
 
 # === Asset Universe ===
-ASSET_UNIVERSE = ["BTC", "ETH", "SOL"]
+ASSET_UNIVERSE = ["BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "ARB", "OP", "SUI", "APT"]
 
 # === Hyperliquid Settings ===
 HYPERLIQUID_MAINNET_URL = "https://api.hyperliquid.xyz"

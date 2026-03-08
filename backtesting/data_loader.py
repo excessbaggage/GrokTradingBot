@@ -256,7 +256,11 @@ class HistoricalDataLoader:
             np.random.seed(seed)
 
         # Default start prices for known assets
-        default_prices = {"BTC": 65000.0, "ETH": 3500.0, "SOL": 150.0}
+        default_prices = {
+            "BTC": 65000.0, "ETH": 3500.0, "SOL": 150.0,
+            "DOGE": 0.15, "AVAX": 35.0, "LINK": 18.0,
+            "ARB": 1.20, "OP": 2.50, "SUI": 1.80, "APT": 9.0,
+        }
         if start_price is None:
             start_price = default_prices.get(asset.upper(), 100.0)
 

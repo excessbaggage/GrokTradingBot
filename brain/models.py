@@ -11,9 +11,9 @@ that untrusted AI responses are safely parsed and constrained.
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class KeyLevels(BaseModel):
@@ -26,8 +26,8 @@ class KeyLevels(BaseModel):
 class AssetAnalysis(BaseModel):
     """Per-asset market analysis produced by Grok for a single trading pair."""
 
-    bias: Literal["long", "short", "neutral"]
-    conviction: Literal["none", "low", "medium", "high"]
+    bias: str  # "long", "short", "neutral"
+    conviction: str  # "none", "low", "medium", "high"
     key_levels: KeyLevels
     sentiment_read: str
     funding_rate_signal: str
@@ -35,19 +35,57 @@ class AssetAnalysis(BaseModel):
 
 
 class MarketAnalysis(BaseModel):
-    """Aggregated market analysis across the entire asset universe."""
+    """Aggregated market analysis across the asset universe.
 
-    btc: AssetAnalysis
-    eth: AssetAnalysis
-    sol: AssetAnalysis
+    Accepts dynamic asset keys (e.g., btc, eth, doge, ...) each mapping
+    to an AssetAnalysis. The asset set is driven by ASSET_UNIVERSE in config.
+
+    Grok returns: ``{"btc": {...}, "eth": {...}, ...}``
+    The model_validator re-packs those into the ``assets`` dict.
+    Dot-notation access is preserved via ``__getattr__``.
+    """
+
+    assets: dict[str, AssetAnalysis] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def collect_asset_keys(cls, data: Any) -> Any:
+        """Collect top-level asset keys into the ``assets`` dict."""
+        if not isinstance(data, dict):
+            return data
+
+        # Already in the normalised format
+        if "assets" in data and isinstance(data["assets"], dict):
+            return data
+
+        from config.trading_config import ASSET_UNIVERSE
+
+        known = {a.lower() for a in ASSET_UNIVERSE}
+        assets_dict: dict[str, Any] = {}
+        remaining: dict[str, Any] = {}
+
+        for key, val in data.items():
+            if key.lower() in known:
+                assets_dict[key.lower()] = val
+            else:
+                remaining[key] = val
+
+        remaining["assets"] = assets_dict
+        return remaining
+
+    def __getattr__(self, name: str) -> AssetAnalysis:
+        """Allow dot-notation: ``market_analysis.btc`` -> ``assets['btc']``."""
+        if name != "assets" and name in self.assets:
+            return self.assets[name]
+        raise AttributeError(f"MarketAnalysis has no asset '{name}'")
 
 
 class PortfolioAssessment(BaseModel):
     """Grok's assessment of the current portfolio state and suggested adjustments."""
 
-    current_risk_level: Literal["low", "moderate", "elevated", "high"]
+    current_risk_level: str  # "low", "moderate", "elevated", "high"
     recent_performance_note: str
-    suggested_exposure_adjustment: Literal["increase", "maintain", "decrease"]
+    suggested_exposure_adjustment: str  # "increase", "maintain", "decrease"
 
 
 class TradeDecision(BaseModel):
@@ -61,17 +99,30 @@ class TradeDecision(BaseModel):
     Grok slightly exceeds our target ranges.
     """
 
-    action: Literal["open_long", "open_short", "close", "adjust_stop", "hold", "no_trade"]
-    asset: Literal["BTC", "ETH", "SOL"]
+    action: str  # "open_long", "open_short", "close", "adjust_stop", "hold", "no_trade"
+    asset: str = Field(description="Asset symbol from ASSET_UNIVERSE")
     size_pct: float = Field(ge=0.0, le=1.0)  # Risk Guardian enforces actual limit
     leverage: float = Field(ge=1.0, le=3.0)
     entry_price: Optional[float] = None
     stop_loss: float
     take_profit: float
-    order_type: Literal["market", "limit"]
+    order_type: str  # "market", "limit"
     reasoning: str
-    conviction: Literal["medium", "high"]
+    conviction: str  # "medium", "high"
     risk_reward_ratio: float = Field(ge=0.0)
+
+    @field_validator("asset")
+    @classmethod
+    def validate_asset(cls, v: str) -> str:
+        """Validate asset is in the configured ASSET_UNIVERSE."""
+        from config.trading_config import ASSET_UNIVERSE
+
+        v_upper = v.upper()
+        if v_upper not in ASSET_UNIVERSE:
+            raise ValueError(
+                f"Asset '{v}' not in ASSET_UNIVERSE: {ASSET_UNIVERSE}"
+            )
+        return v_upper
 
 
 class GrokResponse(BaseModel):
@@ -87,7 +138,7 @@ class GrokResponse(BaseModel):
     portfolio_assessment: PortfolioAssessment
     decisions: list[TradeDecision]
     overall_stance: str
-    next_review_suggestion_minutes: int = Field(ge=5, le=1440)  # Up to 24h; main.py clamps to MIN_CYCLE_INTERVAL
+    next_review_suggestion_minutes: int = Field(ge=5, le=1440)
 
 
 class RiskValidationResult(BaseModel):

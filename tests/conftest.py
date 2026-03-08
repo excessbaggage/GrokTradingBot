@@ -314,6 +314,24 @@ def no_trade_decision() -> TradeDecision:
 # ======================================================================
 
 
+def _default_asset_analysis(
+    bias: str = "neutral",
+    conviction: str = "low",
+    support: float = 100.0,
+    resistance: float = 120.0,
+    summary: str = "Range-bound. No clear setup.",
+) -> dict:
+    """Build a neutral AssetAnalysis dict for filler assets in test data."""
+    return {
+        "bias": bias,
+        "conviction": conviction,
+        "key_levels": {"support": support, "resistance": resistance},
+        "sentiment_read": "Mixed sentiment, no strong signal.",
+        "funding_rate_signal": "Neutral funding rate.",
+        "summary": summary,
+    }
+
+
 def _build_sample_grok_response_dict(
     decisions: list[dict] | None = None,
 ) -> dict:
@@ -335,34 +353,50 @@ def _build_sample_grok_response_dict(
             }
         ]
 
+    # Detailed analyses for original 3 assets
+    market_analysis = {
+        "btc": {
+            "bias": "long",
+            "conviction": "high",
+            "key_levels": {"support": 63000.0, "resistance": 70000.0},
+            "sentiment_read": "Cautiously optimistic, retail not yet overlevered.",
+            "funding_rate_signal": "Neutral, 0.01% 8h -- no extremes.",
+            "summary": "BTC consolidating above 64k support. Bullish structure intact.",
+        },
+        "eth": {
+            "bias": "neutral",
+            "conviction": "low",
+            "key_levels": {"support": 3200.0, "resistance": 3600.0},
+            "sentiment_read": "Mixed. ETH/BTC ratio declining.",
+            "funding_rate_signal": "Slightly negative -- shorts paying longs.",
+            "summary": "ETH range-bound between 3200-3600. No clear direction.",
+        },
+        "sol": {
+            "bias": "short",
+            "conviction": "medium",
+            "key_levels": {"support": 140.0, "resistance": 165.0},
+            "sentiment_read": "Bearish social sentiment after failed breakout.",
+            "funding_rate_signal": "Elevated positive -- crowded long.",
+            "summary": "SOL rejected at 165 resistance. Funding suggests overlevered longs.",
+        },
+    }
+
+    # Add neutral defaults for remaining ASSET_UNIVERSE members
+    from config.trading_config import ASSET_UNIVERSE
+
+    _extra_prices = {
+        "DOGE": (0.12, 0.18), "AVAX": (30.0, 40.0), "LINK": (15.0, 22.0),
+        "ARB": (1.0, 1.5), "OP": (2.0, 3.0), "SUI": (1.5, 2.2), "APT": (7.0, 11.0),
+    }
+    for asset in ASSET_UNIVERSE:
+        key = asset.lower()
+        if key not in market_analysis:
+            sup, res = _extra_prices.get(asset, (100.0, 120.0))
+            market_analysis[key] = _default_asset_analysis(support=sup, resistance=res)
+
     return {
         "timestamp": "2026-03-07T12:00:00Z",
-        "market_analysis": {
-            "btc": {
-                "bias": "long",
-                "conviction": "high",
-                "key_levels": {"support": 63000.0, "resistance": 70000.0},
-                "sentiment_read": "Cautiously optimistic, retail not yet overlevered.",
-                "funding_rate_signal": "Neutral, 0.01% 8h -- no extremes.",
-                "summary": "BTC consolidating above 64k support. Bullish structure intact.",
-            },
-            "eth": {
-                "bias": "neutral",
-                "conviction": "low",
-                "key_levels": {"support": 3200.0, "resistance": 3600.0},
-                "sentiment_read": "Mixed. ETH/BTC ratio declining.",
-                "funding_rate_signal": "Slightly negative -- shorts paying longs.",
-                "summary": "ETH range-bound between 3200-3600. No clear direction.",
-            },
-            "sol": {
-                "bias": "short",
-                "conviction": "medium",
-                "key_levels": {"support": 140.0, "resistance": 165.0},
-                "sentiment_read": "Bearish social sentiment after failed breakout.",
-                "funding_rate_signal": "Elevated positive -- crowded long.",
-                "summary": "SOL rejected at 165 resistance. Funding suggests overlevered longs.",
-            },
-        },
+        "market_analysis": market_analysis,
         "portfolio_assessment": {
             "current_risk_level": "low",
             "recent_performance_note": "Last 3 trades profitable, equity at ATH.",

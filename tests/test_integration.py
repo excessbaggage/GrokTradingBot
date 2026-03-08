@@ -167,6 +167,21 @@ def _make_db() -> sqlite3.Connection:
     return conn
 
 
+def _default_asset_analysis(
+    support: float = 100.0,
+    resistance: float = 120.0,
+) -> dict:
+    """Build a neutral AssetAnalysis dict for filler assets in test data."""
+    return {
+        "bias": "neutral",
+        "conviction": "low",
+        "key_levels": {"support": support, "resistance": resistance},
+        "sentiment_read": "Mixed sentiment, no strong signal.",
+        "funding_rate_signal": "Neutral funding rate.",
+        "summary": "Range-bound. No clear setup.",
+    }
+
+
 def _sample_grok_response_dict(
     decisions: list[dict] | None = None,
     next_review: int = 15,
@@ -189,34 +204,50 @@ def _sample_grok_response_dict(
             }
         ]
 
+    # Detailed analyses for original 3 assets
+    market_analysis = {
+        "btc": {
+            "bias": "long",
+            "conviction": "high",
+            "key_levels": {"support": 65000.0, "resistance": 72000.0},
+            "sentiment_read": "Cautiously optimistic on X. Retail not overleveraged.",
+            "funding_rate_signal": "Neutral at 0.008%, no extreme.",
+            "summary": "BTC holding above 66k after breakout. Bullish structure.",
+        },
+        "eth": {
+            "bias": "neutral",
+            "conviction": "low",
+            "key_levels": {"support": 3200.0, "resistance": 3700.0},
+            "sentiment_read": "Mixed. ETH/BTC ratio declining.",
+            "funding_rate_signal": "Slightly negative.",
+            "summary": "ETH range-bound. No clear setup.",
+        },
+        "sol": {
+            "bias": "short",
+            "conviction": "medium",
+            "key_levels": {"support": 140.0, "resistance": 170.0},
+            "sentiment_read": "Bearish after failed breakout.",
+            "funding_rate_signal": "Elevated positive. Crowded long.",
+            "summary": "SOL rejected at 170 resistance. Overlevered longs.",
+        },
+    }
+
+    # Add neutral defaults for remaining ASSET_UNIVERSE members
+    from config.trading_config import ASSET_UNIVERSE
+
+    _extra_prices = {
+        "DOGE": (0.12, 0.18), "AVAX": (30.0, 40.0), "LINK": (15.0, 22.0),
+        "ARB": (1.0, 1.5), "OP": (2.0, 3.0), "SUI": (1.5, 2.2), "APT": (7.0, 11.0),
+    }
+    for asset in ASSET_UNIVERSE:
+        key = asset.lower()
+        if key not in market_analysis:
+            sup, res = _extra_prices.get(asset, (100.0, 120.0))
+            market_analysis[key] = _default_asset_analysis(support=sup, resistance=res)
+
     return {
         "timestamp": utc_now().isoformat(),
-        "market_analysis": {
-            "btc": {
-                "bias": "long",
-                "conviction": "high",
-                "key_levels": {"support": 65000.0, "resistance": 72000.0},
-                "sentiment_read": "Cautiously optimistic on X. Retail not overleveraged.",
-                "funding_rate_signal": "Neutral at 0.008%, no extreme.",
-                "summary": "BTC holding above 66k after breakout. Bullish structure.",
-            },
-            "eth": {
-                "bias": "neutral",
-                "conviction": "low",
-                "key_levels": {"support": 3200.0, "resistance": 3700.0},
-                "sentiment_read": "Mixed. ETH/BTC ratio declining.",
-                "funding_rate_signal": "Slightly negative.",
-                "summary": "ETH range-bound. No clear setup.",
-            },
-            "sol": {
-                "bias": "short",
-                "conviction": "medium",
-                "key_levels": {"support": 140.0, "resistance": 170.0},
-                "sentiment_read": "Bearish after failed breakout.",
-                "funding_rate_signal": "Elevated positive. Crowded long.",
-                "summary": "SOL rejected at 170 resistance. Overlevered longs.",
-            },
-        },
+        "market_analysis": market_analysis,
         "portfolio_assessment": {
             "current_risk_level": "low",
             "recent_performance_note": "2 of last 3 trades profitable.",
@@ -249,62 +280,47 @@ def _make_market_data() -> dict[str, dict[str, Any]]:
             })
         return pd.DataFrame(rows)
 
-    return {
-        "BTC": {
-            "asset": "BTC",
-            "price": 67200.0,
-            "24h_change_pct": 0.023,
-            "candles": {
-                "1h": _candles(66000, 48),
-                "4h": _candles(65500, 20),
-                "1d": _candles(64000, 10),
-            },
-            "funding": {
-                "current_rate": 0.0001,
-                "avg_7d_rate": 0.00008,
-            },
-            "oi": {
-                "current_oi": 5_000_000_000,
-                "oi_24h_change_pct": 2.5,
-            },
-        },
-        "ETH": {
-            "asset": "ETH",
-            "price": 3450.0,
-            "24h_change_pct": -0.005,
-            "candles": {
-                "1h": _candles(3400, 48),
-                "4h": _candles(3380, 20),
-                "1d": _candles(3300, 10),
-            },
-            "funding": {
-                "current_rate": -0.00005,
-                "avg_7d_rate": 0.00002,
-            },
-            "oi": {
-                "current_oi": 2_000_000_000,
-                "oi_24h_change_pct": -1.0,
-            },
-        },
-        "SOL": {
-            "asset": "SOL",
-            "price": 155.0,
-            "24h_change_pct": -0.018,
-            "candles": {
-                "1h": _candles(153, 48),
-                "4h": _candles(150, 20),
-                "1d": _candles(145, 10),
-            },
-            "funding": {
-                "current_rate": 0.0003,
-                "avg_7d_rate": 0.00025,
-            },
-            "oi": {
-                "current_oi": 800_000_000,
-                "oi_24h_change_pct": 5.0,
-            },
-        },
+    from config.trading_config import ASSET_UNIVERSE
+
+    # Detailed data for original 3 + realistic defaults for others
+    _asset_data = {
+        "BTC": (67200.0, 0.023, 66000, 65500, 64000, 5_000_000_000, 2.5, 0.0001, 0.00008),
+        "ETH": (3450.0, -0.005, 3400, 3380, 3300, 2_000_000_000, -1.0, -0.00005, 0.00002),
+        "SOL": (155.0, -0.018, 153, 150, 145, 800_000_000, 5.0, 0.0003, 0.00025),
+        "DOGE": (0.15, 0.01, 0.14, 0.13, 0.12, 200_000_000, 1.0, 0.0001, 0.0001),
+        "AVAX": (35.0, -0.01, 34, 33, 32, 300_000_000, 0.5, 0.0001, 0.0001),
+        "LINK": (18.0, 0.005, 17, 16.5, 16, 400_000_000, 1.5, 0.0001, 0.0001),
+        "ARB": (1.2, -0.008, 1.1, 1.05, 1.0, 150_000_000, -0.5, 0.0001, 0.0001),
+        "OP": (2.5, 0.012, 2.4, 2.3, 2.2, 120_000_000, 2.0, 0.0001, 0.0001),
+        "SUI": (1.8, -0.003, 1.7, 1.6, 1.5, 100_000_000, 0.0, 0.0001, 0.0001),
+        "APT": (9.0, 0.008, 8.5, 8.0, 7.5, 180_000_000, 1.0, 0.0001, 0.0001),
     }
+
+    result = {}
+    for asset in ASSET_UNIVERSE:
+        price, chg, c1h, c4h, c1d, oi, oi_chg, fund, fund_avg = _asset_data.get(
+            asset, (100.0, 0.0, 99, 98, 97, 100_000_000, 0.0, 0.0001, 0.0001)
+        )
+        result[asset] = {
+            "asset": asset,
+            "price": price,
+            "24h_change_pct": chg,
+            "candles": {
+                "1h": _candles(c1h, 48),
+                "4h": _candles(c4h, 20),
+                "1d": _candles(c1d, 10),
+            },
+            "funding": {
+                "current_rate": fund,
+                "avg_7d_rate": fund_avg,
+            },
+            "oi": {
+                "current_oi": oi,
+                "oi_24h_change_pct": oi_chg,
+            },
+        }
+
+    return result
 
 
 def _make_portfolio(
@@ -551,9 +567,9 @@ class TestContextBuilder:
 
         # Section headers
         assert "CURRENT MARKET DATA" in prompt
-        assert "BTC-USD Perpetual" in prompt
-        assert "ETH-USD Perpetual" in prompt
-        assert "SOL-USD Perpetual" in prompt
+        from config.trading_config import ASSET_UNIVERSE
+        for asset in ASSET_UNIVERSE:
+            assert f"{asset}-USD Perpetual" in prompt
         assert "YOUR CURRENT PORTFOLIO" in prompt
         assert "Open Positions" in prompt
         assert "Recent Trades" in prompt
