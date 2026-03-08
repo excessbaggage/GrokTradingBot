@@ -1,5 +1,5 @@
 """
-Sentinel Trading Bot — Web Monitoring Dashboard
+Grok Trader — Web Monitoring Dashboard
 
 A read-only Flask dashboard that connects to the Supabase PostgreSQL
 database and presents real-time trading status, portfolio metrics,
@@ -547,7 +547,7 @@ DASHBOARD_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sentinel — Trading Dashboard</title>
+    <title>Grok Trader — Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
     <script>
@@ -596,8 +596,8 @@ DASHBOARD_HTML = """
     <header class="border-b border-dark-border px-6 py-4 flex items-center justify-between">
         <div class="flex items-center gap-3">
             <div class="text-2xl font-bold tracking-tight">
-                <span class="text-accent">SENTINEL</span>
-                <span class="text-dark-muted ml-2 text-sm font-normal">Trading Dashboard</span>
+                <span class="text-accent">GROK TRADER</span>
+                <span class="text-dark-muted ml-2 text-sm font-normal">Crypto Dashboard</span>
             </div>
         </div>
         <div class="flex items-center gap-4">
@@ -810,7 +810,7 @@ DASHBOARD_HTML = """
 
     <!-- FOOTER -->
     <footer class="text-center text-dark-muted text-xs py-4 border-t border-dark-border">
-        Sentinel &mdash; Grok-Powered Autonomous Trader &mdash; Read-only dashboard (fast: 15s / slow: 30s)
+        Grok Trader &mdash; AI-Powered Crypto Trading &mdash; Read-only dashboard (fast: 15s / slow: 30s)
     </footer>
 
     <script>
@@ -1528,7 +1528,7 @@ def index():
 if __name__ == "__main__":
     print("")
     print("=" * 50)
-    print("  SENTINEL -- Trading Dashboard")
+    print("  GROK TRADER -- Crypto Dashboard")
     print(f"  http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
     print(f"  Database: Supabase PostgreSQL")
     print("  Mode: READ-ONLY")

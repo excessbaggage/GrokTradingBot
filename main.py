@@ -656,7 +656,7 @@ def main():
     setup_logger()
 
     logger.info("=" * 60)
-    logger.info("  GROK TRADING BOT — SENTINEL")
+    logger.info("  GROK TRADER — AI-Powered Crypto Trading")
     logger.info(f"  Mode: {'LIVE' if LIVE_TRADING else 'PAPER (Testnet)'}")
     logger.info(f"  Assets: {', '.join(ASSET_UNIVERSE)}")
     logger.info(f"  Model: {GROK_MODEL}")
@@ -763,9 +763,9 @@ def main():
             notifier.check_heartbeat(next_cycle_minutes)
 
     # Graceful shutdown
-    logger.info("Shutting down Sentinel gracefully...")
+    logger.info("Shutting down Grok Trader gracefully...")
     notifier.send_bot_offline()
-    logger.info("Sentinel stopped. Goodbye.")
+    logger.info("Grok Trader stopped. Goodbye.")
 
 
 if __name__ == "__main__":
