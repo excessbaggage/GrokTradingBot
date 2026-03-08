@@ -247,7 +247,16 @@ def api_risk():
             "SELECT COUNT(*) AS cnt FROM rejections"
         ).fetchone()
 
-
+        # Win rate from all closed trades
+        wr_row = db.execute(
+            """SELECT
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins
+               FROM trades WHERE status = 'closed' AND pnl IS NOT NULL"""
+        ).fetchone()
+        total_closed = int(wr_row["total"]) if wr_row else 0
+        total_wins = int(wr_row["wins"]) if wr_row else 0
+        win_rate = (total_wins / total_closed * 100) if total_closed > 0 else 0.0
 
         return jsonify({
             "total_exposure_pct": total_exposure * 100,
@@ -255,6 +264,9 @@ def api_risk():
             "consecutive_losses": consecutive_losses,
             "trades_today": trade_count_row["cnt"] if trade_count_row else 0,
             "total_rejections": rejection_count_row["cnt"] if rejection_count_row else 0,
+            "win_rate": round(win_rate, 1),
+            "total_closed_trades": total_closed,
+            "total_wins": total_wins,
         })
     except Exception as e:
         app.logger.error("API error: %s", e)
@@ -604,11 +616,16 @@ DASHBOARD_HTML = """
     <main class="p-6 max-w-7xl mx-auto space-y-6">
 
         <!-- TOP STATS ROW -->
-        <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-4">
+        <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
             <div class="card p-4">
                 <div class="text-dark-muted text-xs uppercase tracking-wide mb-1">Equity</div>
                 <div id="equity" class="text-2xl font-bold">$0.00</div>
                 <div id="total-return" class="text-sm text-dark-muted">+0.00%</div>
+            </div>
+            <div class="card p-4 border-accent/30">
+                <div class="text-dark-muted text-xs uppercase tracking-wide mb-1">Win Rate</div>
+                <div id="win-rate" class="text-2xl font-bold text-accent">0.0%</div>
+                <div id="win-rate-detail" class="text-sm text-dark-muted">0/0 trades</div>
             </div>
             <div class="card p-4">
                 <div class="text-dark-muted text-xs uppercase tracking-wide mb-1">Invested</div>
@@ -944,6 +961,14 @@ DASHBOARD_HTML = """
 
         document.getElementById('trades-today').textContent = data.trades_today;
         document.getElementById('total-rejections').textContent = data.total_rejections;
+
+        // Win rate card
+        const wr = data.win_rate || 0;
+        const wrEl = document.getElementById('win-rate');
+        wrEl.textContent = fmtPct(wr, false);
+        wrEl.className = `text-2xl font-bold ${wr >= 50 ? 'text-profit' : wr > 0 ? 'text-loss' : 'text-accent'}`;
+        document.getElementById('win-rate-detail').textContent =
+            `${data.total_wins || 0}/${data.total_closed_trades || 0} trades`;
     }
 
     async function updatePositions() {
