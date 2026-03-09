@@ -159,6 +159,10 @@ def execute_query(
             q=query[:200],
             p=params,
         )
+        try:
+            conn.rollback()
+        except Exception:
+            pass  # Connection may already be closed / broken
         raise
 
 

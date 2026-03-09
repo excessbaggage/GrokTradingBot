@@ -249,11 +249,18 @@ class PositionManager:
                         if entry_price > 0 else 0.0
                     )
 
+                # Compute dollar P&L for the pnl column
+                size_pct_f = float(db_open[asset].get("size_pct", 0))
+                leverage_f = float(db_open[asset].get("leverage", 1))
+                from config.trading_config import STARTING_CAPITAL
+                dollar_pnl = round(pnl * size_pct_f * STARTING_CAPITAL * leverage_f, 4)
+
                 db_connection.execute(
                     """
                     UPDATE trades
                     SET status     = 'closed',
                         exit_price = ?,
+                        pnl        = ?,
                         pnl_pct    = ?,
                         closed_at  = ?,
                         reasoning  = COALESCE(reasoning, '') || ' [closed: exchange_sync]'
@@ -261,6 +268,7 @@ class PositionManager:
                     """,
                     (
                         mark_price,
+                        dollar_pnl,
                         round(pnl, 6),
                         datetime.now(timezone.utc).isoformat(),
                         asset,
@@ -576,6 +584,28 @@ class PositionManager:
                 continue
 
             # Position exceeded max holding period — force close
+
+            # In live mode, actually close the position on the exchange first
+            if LIVE_TRADING:
+                try:
+                    close_result = self._om.close_position(asset)
+                    if close_result.get("status") == "error":
+                        logger.error(
+                            "TIME-EXIT: Failed to close {asset} on exchange: {err}",
+                            asset=asset, err=close_result.get("error", "unknown"),
+                        )
+                        continue  # Don't mark DB closed if exchange close failed
+                    logger.info(
+                        "TIME-EXIT: Closed {asset} on exchange",
+                        asset=asset,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "TIME-EXIT: Exchange close failed for {asset}: {err}",
+                        asset=asset, err=exc,
+                    )
+                    continue  # Don't mark DB closed if exchange close failed
+
             mark_price = self._get_mark_price(asset) or 0.0
 
             if side == "long":

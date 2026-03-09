@@ -120,11 +120,17 @@ def maxed_trades_db() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:", isolation_level=None)
     conn.row_factory = sqlite3.Row
     _create_trades_table(conn)
-    # Insert 50 trades all in the past (latest at now-6min to clear cooldown)
+    # All 50 trades must land within today's UTC day so the daily count
+    # query always finds them, even when the test runs near midnight UTC.
+    # The latest trade is placed 6 minutes ago to clear the cooldown check.
     now = datetime.now(timezone.utc)
-    start = now - timedelta(minutes=56)
+    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    latest_trade_time = now - timedelta(minutes=6)
+    # Space trades evenly between midnight and 6 minutes ago
+    span_seconds = (latest_trade_time - today_midnight).total_seconds()
     for i in range(50):
-        opened_at = (start + timedelta(minutes=i)).isoformat()
+        offset = span_seconds * i / 49 if span_seconds > 0 else 0
+        opened_at = (today_midnight + timedelta(seconds=offset)).isoformat()
         _insert_trade(conn, asset="BTC", opened_at=opened_at)
     yield conn
     conn.close()

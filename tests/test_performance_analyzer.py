@@ -631,7 +631,7 @@ class TestContextBuilderIntegration:
         assert "PERFORMANCE ANALYTICS" not in prompt
 
     def test_performance_section_between_risk_and_task(self) -> None:
-        """Performance section should appear between RISK STATUS and YOUR TASK."""
+        """Performance section should appear between RISK STATUS and TASK."""
         summary = "Test analytics content here"
         prompt = build_context_prompt(
             market_data={},
@@ -645,7 +645,7 @@ class TestContextBuilderIntegration:
         )
         risk_pos = prompt.index("RISK STATUS")
         perf_pos = prompt.index("PERFORMANCE ANALYTICS")
-        task_pos = prompt.index("YOUR TASK")
+        task_pos = prompt.index("## TASK")
         assert risk_pos < perf_pos < task_pos
 
 

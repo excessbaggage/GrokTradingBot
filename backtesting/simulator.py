@@ -1,5 +1,5 @@
 """
-Event-driven backtest simulator for the Sentinel trading bot.
+Event-driven backtest simulator for the Grok Trader trading bot.
 
 Steps through historical candles chronologically, calls a user-provided
 decision callback to generate ``TradeDecision`` objects, validates them

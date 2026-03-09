@@ -381,6 +381,13 @@ class Notifier:
                 return
             self._warning_sent[error_key] = now_ts
 
+            # Periodic cleanup: remove stale dedup entries
+            if len(self._warning_sent) > 100:
+                cutoff = now_ts - self._WARNING_DEDUP_WINDOW
+                self._warning_sent = {
+                    k: v for k, v in self._warning_sent.items() if v > cutoff
+                }
+
         severity_label = severity.upper()
         lines = [
             f"*** ERROR [{severity_label}] ***",
@@ -451,7 +458,7 @@ class Notifier:
         lines = [
             "<<< BOT OFFLINE >>>",
             f"Time:   {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
-            "Sentinel has been shut down.",
+            "Grok Trader has been shut down.",
         ]
         message = "\n".join(lines)
         self._broadcast(message)

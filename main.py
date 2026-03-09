@@ -59,6 +59,9 @@ from execution.notifications import Notifier
 # Global flag for graceful shutdown
 _shutdown_requested = False
 
+# Track the last date a daily summary was sent to avoid duplicates
+_last_daily_summary_date = None
+
 
 def signal_handler(signum, frame):
     """Handle SIGINT/SIGTERM for graceful shutdown."""
@@ -267,7 +270,16 @@ def run_cycle(
             logger.info("No actionable trades this cycle. Staying flat.")
         else:
             # --- Step 10: Validate and execute each decision ---
+            traded_assets_this_cycle: set[str] = set()
             for decision in actionable:
+                # Dedup: skip if we already traded this asset in this cycle
+                if decision.asset in traded_assets_this_cycle:
+                    logger.warning(
+                        f"SKIPPED duplicate decision for {decision.asset} "
+                        f"(already traded this cycle)"
+                    )
+                    continue
+
                 logger.info(
                     f"Evaluating: {decision.action} {decision.asset} "
                     f"size={decision.size_pct:.1%} leverage={decision.leverage}x"
@@ -283,32 +295,38 @@ def run_cycle(
                     )
 
                     if order_result and order_result.get("status") != "error":
-                        # Determine side: for close actions, extract from order result
                         if decision.action == "close":
-                            raw_side = order_result.get("side", "")
-                            trade_side = raw_side.replace("close_", "") or "long"
+                            # Close the existing DB trade instead of inserting orphan row
+                            _close_db_trade(db, decision.asset, order_result)
+                        elif decision.action == "adjust_stop":
+                            # Update stop_loss on the existing DB trade
+                            _adjust_db_stop(db, decision.asset, decision.stop_loss)
                         else:
+                            # Open new position: INSERT into trades table
                             trade_side = "long" if "long" in decision.action else "short"
-
-                        # Build trade_data dict combining decision + order result
-                        trade_data = {
-                            "asset": decision.asset,
-                            "side": trade_side,
-                            "action": decision.action,
-                            "size_pct": decision.size_pct,
-                            "leverage": decision.leverage,
-                            "entry_price": order_result.get("fill_price", decision.entry_price),
-                            "stop_loss": decision.stop_loss,
-                            "take_profit": decision.take_profit,
-                            "reasoning": decision.reasoning,
-                            "conviction": decision.conviction,
-                            "fees": order_result.get("fees", 0.0),
-                        }
-                        trade_history.log_trade(db, trade_data)
-                        notifier.send_trade_alert(decision, order_result, portfolio=portfolio)
+                            trade_data = {
+                                "asset": decision.asset,
+                                "side": trade_side,
+                                "action": decision.action,
+                                "size_pct": decision.size_pct,
+                                "leverage": decision.leverage,
+                                "entry_price": order_result.get("fill_price", decision.entry_price),
+                                "stop_loss": decision.stop_loss,
+                                "take_profit": decision.take_profit,
+                                "reasoning": decision.reasoning,
+                                "conviction": decision.conviction,
+                                "fees": order_result.get("fees", 0.0),
+                            }
+                            trade_history.log_trade(db, trade_data)
+                        try:
+                            notifier.send_trade_alert(decision, order_result, portfolio=portfolio)
+                        except Exception as notif_err:
+                            logger.error(f"Notification failed (non-fatal): {notif_err}")
+                        traded_assets_this_cycle.add(decision.asset)
                         logger.info(f"Trade executed: {order_result}")
-                        _log_cycle_event(db, cycle_number, "trade_opened",
-                            f"{decision.action} {decision.asset} @ ${order_result.get('fill_price', 0):,.2f}",
+                        event_type = "trade_closed" if decision.action == "close" else "trade_opened"
+                        _log_cycle_event(db, cycle_number, event_type,
+                            f"{decision.action} {decision.asset} @ ${order_result.get('fill_price', order_result.get('exit_price', 0)):,.2f}",
                             severity="success", asset=decision.asset,
                             details={"action": decision.action, "size_pct": decision.size_pct, "leverage": decision.leverage})
                     else:
@@ -329,6 +347,8 @@ def run_cycle(
         position_mgr.manage_open_positions(db)
 
         # --- Step 11b: Save equity snapshot for dashboard chart ---
+        # Re-fetch portfolio so unrealized PnL reflects the updates from manage_open_positions
+        portfolio = portfolio_mgr.fetch_portfolio_from_exchange(order_mgr.info)
         _save_equity_snapshot(db, cycle_number, portfolio)
 
         # --- Step 11c: Save market + regime + sentiment snapshots for dashboard ---
@@ -336,8 +356,11 @@ def run_cycle(
         _save_performance_cache(db, cycle_number)
 
         # --- Step 12: Daily summary ---
+        global _last_daily_summary_date
         now = datetime.now(timezone.utc)
-        if now.hour == DAILY_SUMMARY_HOUR_UTC and now.minute < CYCLE_INTERVAL_MINUTES:
+        today_str = now.strftime("%Y-%m-%d")
+        if now.hour == DAILY_SUMMARY_HOUR_UTC and _last_daily_summary_date != today_str:
+            _last_daily_summary_date = today_str
             summary = _generate_daily_summary(db, portfolio)
             notifier.send_daily_summary(summary)
             # Cleanup old dashboard data (keep 7 days)
@@ -347,13 +370,19 @@ def run_cycle(
                 db.execute("DELETE FROM performance_cache WHERE timestamp < NOW() - INTERVAL '48 hours'")
                 db.commit()
             except Exception:
-                pass  # Non-critical cleanup
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
 
         # --- Step 13: Determine next cycle timing ---
         suggested = grok_response.next_review_suggestion_minutes
-        next_cycle = max(min(suggested, MAX_CYCLE_INTERVAL_MINUTES), MIN_CYCLE_INTERVAL_MINUTES)
-        if suggested != next_cycle:
-            logger.info(f"Grok suggested {suggested} min, clamped to {next_cycle} min")
+        if suggested is not None:
+            next_cycle = max(min(suggested, MAX_CYCLE_INTERVAL_MINUTES), MIN_CYCLE_INTERVAL_MINUTES)
+            if suggested != next_cycle:
+                logger.info(f"Grok suggested {suggested} min, clamped to {next_cycle} min")
+        else:
+            next_cycle = CYCLE_INTERVAL_MINUTES
         logger.info(f"=== CYCLE {cycle_number} COMPLETE === Next in {next_cycle} min")
         _log_cycle_event(db, cycle_number, "cycle_end",
             f"Cycle {cycle_number} complete. Next in {next_cycle} min",
@@ -362,6 +391,10 @@ def run_cycle(
 
     except Exception as e:
         logger.exception(f"Cycle {cycle_number} error: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
         notifier.send_error_alert(f"Cycle {cycle_number} error: {e}", severity="critical")
         return CYCLE_INTERVAL_MINUTES
     finally:
@@ -482,6 +515,78 @@ def _save_equity_snapshot(db, cycle_number, portfolio):
         except Exception:
             pass
         logger.error(f"Failed to save equity snapshot: {e}")
+
+
+def _close_db_trade(db, asset: str, order_result: dict) -> None:
+    """Close the existing open trade in the DB for the given asset.
+
+    Called when Grok issues a ``close`` decision. Instead of inserting
+    a new orphan trade row, this finds the open trade and marks it closed
+    with the correct exit price and P&L from the order result.
+    """
+    from data.database import fetch_one
+    try:
+        row = fetch_one(
+            db,
+            "SELECT id, entry_price, side, leverage, size_pct FROM trades WHERE asset = ? AND status = 'open' LIMIT 1",
+            (asset,),
+        )
+        if not row:
+            logger.warning("Close requested for {} but no open trade found in DB", asset)
+            return
+
+        trade_id = row["id"]
+        exit_price = order_result.get("exit_price") or order_result.get("fill_price", 0.0)
+        # Use P&L from order_result if available, otherwise compute
+        if "pnl" in order_result:
+            dollar_pnl = order_result["pnl"]
+        else:
+            from config.trading_config import STARTING_CAPITAL
+            entry = float(row["entry_price"]) if row["entry_price"] else 0.0
+            side = row["side"]
+            leverage = float(row["leverage"]) if row["leverage"] else 1.0
+            size_pct = float(row["size_pct"]) if row["size_pct"] else 0.0
+            if entry > 0:
+                if side == "long":
+                    pnl_pct = (exit_price - entry) / entry * leverage
+                else:
+                    pnl_pct = (entry - exit_price) / entry * leverage
+            else:
+                pnl_pct = 0.0
+            dollar_pnl = round(pnl_pct * size_pct * STARTING_CAPITAL, 4)
+
+        fees = order_result.get("fees", 0.0)
+        trade_history.close_trade(db, trade_id, exit_price, dollar_pnl, fees)
+        db.commit()
+        logger.info("DB trade closed via Grok decision | id={} asset={} exit={} pnl={}",
+                     trade_id, asset, exit_price, dollar_pnl)
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.error("Failed to close DB trade for {}: {}", asset, exc)
+
+
+def _adjust_db_stop(db, asset: str, new_stop_loss: float) -> None:
+    """Update stop_loss on the existing open trade for the given asset.
+
+    Called when Grok issues an ``adjust_stop`` decision. Modifies the
+    existing trade record rather than inserting a new row.
+    """
+    try:
+        db.execute(
+            "UPDATE trades SET stop_loss = ? WHERE asset = ? AND status = 'open'",
+            (new_stop_loss, asset),
+        )
+        db.commit()
+        logger.info("Stop loss adjusted | asset={} new_sl={}", asset, new_stop_loss)
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.error("Failed to adjust stop for {}: {}", asset, exc)
 
 
 def _log_cycle_event(db, cycle_number, event_type, summary, severity="info", asset=None, details=None):

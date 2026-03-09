@@ -695,11 +695,9 @@ class TestContextBuilderIntegration:
             regime_data={"BTC": regime},
         )
 
-        assert "Market Regime" in prompt
-        assert "Regime Advice" in prompt
-        assert "ADX(14)" in prompt
-        assert "Choppiness Index" in prompt
-        assert "BB Width Percentile" in prompt
+        assert "Regime=" in prompt
+        assert "ADX=" in prompt
+        assert "CI=" in prompt
 
     def test_regime_lines_omitted_when_none(self) -> None:
         """When regime_data is None, no regime lines should appear."""
@@ -745,8 +743,7 @@ class TestContextBuilderIntegration:
             regime_data=None,
         )
 
-        assert "Market Regime" not in prompt
-        assert "Regime Advice" not in prompt
+        assert "Regime=" not in prompt
 
     def test_regime_lines_omitted_for_missing_asset(self) -> None:
         """If regime_data exists but lacks the asset, no regime lines appear."""
@@ -809,7 +806,7 @@ class TestContextBuilderIntegration:
         )
 
         # SOL section should NOT have regime data
-        assert "Market Regime" not in prompt
+        assert "Regime=" not in prompt
 
 
 # ======================================================================

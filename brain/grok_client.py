@@ -97,7 +97,7 @@ class GrokClient:
         caller is responsible for parsing and validating the JSON.
 
         Args:
-            system_prompt: The static Sentinel system prompt.
+            system_prompt: The Grok Trader system prompt.
             context: The dynamic market-data / portfolio context for this cycle.
 
         Returns:
@@ -123,6 +123,9 @@ class GrokClient:
             temperature=self._temperature,
         )
 
+        if not response.choices:
+            logger.error("Grok returned empty choices list")
+            return ""
         raw_text: str = response.choices[0].message.content or ""
 
         # Log token usage when available

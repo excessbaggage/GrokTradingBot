@@ -580,12 +580,12 @@ class TestContextBuilder:
         assert "CURRENT MARKET DATA" in prompt
         from config.trading_config import ASSET_UNIVERSE
         for asset in ASSET_UNIVERSE:
-            assert f"{asset}-USD Perpetual" in prompt
+            assert f"### {asset}" in prompt
         assert "YOUR CURRENT PORTFOLIO" in prompt
         assert "Open Positions" in prompt
         assert "Recent Trades" in prompt
         assert "RISK STATUS" in prompt
-        assert "YOUR TASK" in prompt
+        assert "TASK" in prompt
 
     def test_portfolio_values_appear_in_prompt(self):
         """Equity and margin values appear formatted in the prompt."""
@@ -1737,7 +1737,7 @@ class TestLoggerIntegration:
         prompt = get_system_prompt()
         assert isinstance(prompt, str)
         assert len(prompt) > 500
-        assert "Sentinel" in prompt
+        assert "Grok Trader" in prompt
         assert "stop-loss" in prompt.lower()
         assert "JSON" in prompt
         assert "decisions" in prompt

@@ -79,7 +79,20 @@ def build_context_prompt(
         sections.append(f"## CURRENT MARKET DATA (as of {timestamp})")
 
         # ── PER-ASSET MARKET DATA ─────────────────────────────────────
+        skipped_assets: list[str] = []
         for asset, data in market_data.items():
+            # Skip assets with no usable candle data (e.g. delisted on testnet)
+            candles = data.get("candles", {})
+            has_candles = any(
+                candles.get(tf) is not None and (
+                    not hasattr(candles.get(tf), "empty") or not candles.get(tf).empty
+                )
+                for tf in ("1h", "4h", "1d")
+            )
+            if not has_candles and not data.get("price"):
+                skipped_assets.append(asset)
+                continue
+
             asset_liq = (
                 liquidation_data.get(asset) if liquidation_data else None
             )
@@ -93,6 +106,11 @@ def build_context_prompt(
                 _build_asset_section(
                     asset, data, asset_liq, asset_regime, asset_sentiment
                 )
+            )
+        if skipped_assets:
+            sections.append(
+                f"*Skipped {len(skipped_assets)} assets with no market data: "
+                f"{', '.join(skipped_assets)}*"
             )
 
         # ── PORTFOLIO ─────────────────────────────────────────────────
@@ -153,6 +171,25 @@ def build_context_prompt(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _compact_candle_summary(df, timeframe: str) -> str:
+    """One-line candle summary to reduce token usage."""
+    import pandas as pd
+    required = {"open", "high", "low", "close", "volume"}
+    if df is None or (hasattr(df, "empty") and df.empty) or not required.issubset(set(getattr(df, "columns", []))):
+        return "N/A"
+    period_high = df["high"].max()
+    period_low = df["low"].min()
+    latest_close = df["close"].iloc[-1]
+    first_open = df["open"].iloc[0]
+    pct = ((latest_close - first_open) / first_open * 100) if first_open else 0
+    trend = "UP" if pct > 1 else ("DN" if pct < -1 else "FLAT")
+    recent = df.tail(min(3, len(df)))
+    r_mom = 0.0
+    if len(recent) >= 2:
+        r_mom = ((recent["close"].iloc[-1] - recent["open"].iloc[0]) / recent["open"].iloc[0] * 100) if recent["open"].iloc[0] else 0
+    return f"{trend} {pct:+.1f}% | {format_price(period_low)}-{format_price(period_high)} | close={format_price(latest_close)} | mom={r_mom:+.1f}%"
+
+
 def _build_asset_section(
     asset: str,
     data: dict[str, Any],
@@ -172,11 +209,11 @@ def _build_asset_section(
     current_oi = oi.get("current_oi", 0)
     oi_change = oi.get("oi_24h_change_pct", 0)
 
-    # Candle summaries
+    # Candle summaries — use compact single-line format
     candles = data.get("candles", {})
-    summary_4h = summarize_candles(candles.get("4h"))
-    summary_1d = summarize_candles(candles.get("1d"))
-    summary_1h = summarize_candles(candles.get("1h"))
+    summary_4h = _compact_candle_summary(candles.get("4h"), "4h")
+    summary_1d = _compact_candle_summary(candles.get("1d"), "1d")
+    summary_1h = _compact_candle_summary(candles.get("1h"), "1h")
 
     # Technical indicators (ATR, RSI, adaptive thresholds)
     tech = data.get("technicals", {})
@@ -189,46 +226,33 @@ def _build_asset_section(
     turtle_factor = tech.get("turtle_size_factor", 1.0)
 
     lines = [
-        f"### {asset}-USD Perpetual",
-        f"- Price: {format_usd(price)}",
-        f"- 24h Change: {format_pct(change_24h)}",
-        f"- 1h Candles Summary: {summary_1h}",
-        f"- 4h Candles Summary: {summary_4h}",
-        f"- Daily Candles Summary: {summary_1d}",
-        f"- Funding Rate (current): {funding_current:.6f}% (8h)",
-        f"- Funding Rate (avg 7d): {funding_7d:.6f}%",
-        f"- Open Interest: {format_usd(current_oi)} ({format_pct(oi_change / 100 if oi_change else 0)} 24h change)",
-        f"- **ATR(14)**: {format_usd(atr_14)} ({format_pct(atr_pct)} of price)",
-        f"- **RSI(14)**: {rsi_14} (adaptive OB={adaptive_ob}, OS={adaptive_os})",
-        f"- **Volatility Regime**: {vol_regime.upper()}",
-        f"- **Turtle Size Factor**: {turtle_factor:.2f}x (higher = safer to size up, lower = reduce size)",
+        f"### {asset}",
+        f"Price={format_usd(price)} 24h={format_pct(change_24h)} | Fund={funding_current:.4f}% 7d={funding_7d:.4f}% | OI={format_usd(current_oi)} {format_pct(oi_change / 100 if oi_change else 0)}",
+        f"1h: {summary_1h}",
+        f"4h: {summary_4h}",
+        f"1d: {summary_1d}",
+        f"ATR={format_usd(atr_14)}({format_pct(atr_pct)}) RSI={rsi_14}(OB={adaptive_ob},OS={adaptive_os}) Vol={vol_regime.upper()} Turtle={turtle_factor:.2f}x",
     ]
 
-    # ── Liquidation Heatmap (optional) ────────────────────────────
-    if liquidation is not None:
-        estimator = LiquidationEstimator()
-        liq_text = estimator.format_for_context(liquidation)
-        lines.append(liq_text)
+    # ── Liquidation Heatmap (compact) ───────────────────────────
+    if liquidation is not None and hasattr(liquidation, "nearest_long_liq"):
+        lines.append(
+            f"Liq: long={format_price(liquidation.nearest_long_liq)} "
+            f"short={format_price(liquidation.nearest_short_liq)}"
+        )
 
-    # ── Market Regime (optional) ─────────────────────────────────
+    # ── Market Regime (compact) ──────────────────────────────────
     if regime is not None:
-        lines.extend([
-            f"- **Market Regime**: {regime.regime.value.upper()} (confidence: {regime.confidence:.0%})",
-            f"- **Regime Advice**: {regime.strategy_recommendation['description']}",
-            f"- **ADX(14)**: {regime.adx:.1f} (+DI={regime.plus_di:.1f}, -DI={regime.minus_di:.1f})",
-            f"- **Choppiness Index**: {regime.choppiness_index:.1f}",
-            f"- **BB Width Percentile**: {regime.bb_width_percentile:.0f}%",
-        ])
+        lines.append(
+            f"Regime={regime.regime.value.upper()}({regime.confidence:.0%}) "
+            f"ADX={regime.adx:.1f} CI={regime.choppiness_index:.1f}"
+        )
 
-    # ── X Sentiment (optional) ─────────────────────────────────
+    # ── X Sentiment (compact) ────────────────────────────────────
     if sentiment is not None and hasattr(sentiment, "score"):
-        topics_str = ", ".join(sentiment.key_topics[:3]) if sentiment.key_topics else "N/A"
-        lines.extend([
-            f"- **X Sentiment Score**: {sentiment.score:+.2f} (-1.0 bearish to +1.0 bullish)",
-            f"- **X Sentiment Momentum**: {sentiment.momentum.upper()}",
-            f"- **X Discussion Volume**: {sentiment.volume.upper()}",
-            f"- **Key X Topics**: {topics_str}",
-        ])
+        lines.append(
+            f"X={sentiment.score:+.2f} mom={sentiment.momentum} vol={sentiment.volume}"
+        )
 
     return "\n".join(lines)
 
@@ -397,9 +421,8 @@ def _build_correlation_section(
 def _build_task_section() -> str:
     """Build the task instruction footer."""
     return (
-        "## YOUR TASK\n"
-        "Analyze the above data. Provide your market analysis, portfolio "
-        "assessment, and trading decisions in the required JSON format. "
-        "If no high-conviction setups exist, return an empty decisions "
-        "array. DO NOT FORCE TRADES."
+        "## TASK\n"
+        "Analyze data above. Return JSON with market_analysis (only for assets "
+        "with actionable setups), portfolio_assessment, and decisions. "
+        "Keep analysis summaries to 1 sentence each. Be concise."
     )

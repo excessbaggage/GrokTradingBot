@@ -18,7 +18,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, g, jsonify, render_template_string
+from flask import Flask, g, jsonify, render_template_string, request
 
 from config.trading_config import (
     ASSET_UNIVERSE,
@@ -80,16 +80,23 @@ def api_status():
         event_row = db.execute(
             "SELECT timestamp, event_type, summary FROM cycle_events ORDER BY timestamp DESC LIMIT 1"
         ).fetchone()
-        last_event = {
-            "timestamp": event_row["timestamp"] if event_row else None,
-            "type": event_row["event_type"] if event_row else None,
-            "summary": event_row["summary"] if event_row else None,
-        } if event_row else None
+        if event_row:
+            ev_ts = event_row["timestamp"]
+            ev_ts_str = ev_ts.isoformat() if hasattr(ev_ts, "isoformat") else str(ev_ts)
+            last_event = {
+                "timestamp": ev_ts_str,
+                "type": event_row["event_type"],
+                "summary": event_row["summary"],
+            }
+        else:
+            last_event = None
 
         if row:
+            lct = row["timestamp"]
+            lct_str = lct.isoformat() if hasattr(lct, "isoformat") else str(lct)
             return jsonify({
                 "online": True,
-                "last_cycle_time": row["timestamp"],
+                "last_cycle_time": lct_str,
                 "cycle_number": row["cycle_number"],
                 "mode": "LIVE" if LIVE_TRADING else "PAPER",
                 "assets": ASSET_UNIVERSE,
@@ -247,12 +254,12 @@ def api_risk():
             "SELECT COUNT(*) AS cnt FROM rejections"
         ).fetchone()
 
-        # Win rate from all closed trades
+        # Win rate from all closed trades (use pnl_pct which is always populated)
         wr_row = db.execute(
             """SELECT
                    COUNT(*) AS total,
-                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins
-               FROM trades WHERE status = 'closed' AND pnl IS NOT NULL"""
+                   SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) AS wins
+               FROM trades WHERE status = 'closed' AND pnl_pct IS NOT NULL"""
         ).fetchone()
         total_closed = int(wr_row["total"]) if wr_row else 0
         total_wins = int(wr_row["wins"]) if wr_row else 0
@@ -499,8 +506,12 @@ def api_equity_chart():
         if rows:
             data = []
             for row in rows:
+                # Force timestamp to ISO string so Flask doesn't
+                # auto-format it as an HTTP date
+                ts = row["timestamp"]
+                ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
                 data.append({
-                    "date": row["timestamp"],
+                    "date": ts_str,
                     "ending_equity": row["equity"],
                     "pnl": float(row["unrealized_pnl"] or 0) + float(row["realized_pnl"] or 0),
                     "pnl_pct": round(
@@ -538,6 +549,156 @@ def api_equity_chart():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ASSET DETAIL ENDPOINT (used by ticker drill-down modal)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Lazy-init market data fetcher (created on first /api/asset/ call)
+_market_data_fetcher = None
+
+
+def _get_market_data_fetcher():
+    global _market_data_fetcher
+    if _market_data_fetcher is None:
+        from data.market_data import MarketDataFetcher
+        _market_data_fetcher = MarketDataFetcher()
+    return _market_data_fetcher
+
+
+@app.route("/api/asset/<symbol>")
+def api_asset_detail(symbol: str):
+    """Aggregated detail data for a single asset (used by drill-down modal).
+
+    Query params:
+        interval: candle interval (5m, 15m, 1h, 4h, 1d). Default: 1h
+        limit: number of candles. Default: 100
+    """
+    symbol = symbol.strip().upper()
+    if symbol not in ASSET_UNIVERSE:
+        return jsonify({"error": f"Unknown asset: {symbol}"}), 404
+
+    interval = request.args.get("interval", "1h")
+    if interval not in ("1m", "5m", "15m", "1h", "4h", "1d"):
+        interval = "1h"
+    try:
+        limit = min(int(request.args.get("limit", "100")), 500)
+    except (ValueError, TypeError):
+        limit = 100
+
+    result = {"asset": symbol, "interval": interval}
+
+    try:
+        mdf = _get_market_data_fetcher()
+
+        # Candles
+        try:
+            df = mdf.fetch_ohlcv(symbol, interval=interval, limit=limit)
+            candles = []
+            for _, row in df.iterrows():
+                ts = row["timestamp"]
+                candles.append({
+                    "time": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": float(row["volume"]),
+                })
+            result["candles"] = candles
+        except Exception as e:
+            app.logger.warning("Candles failed for %s: %s", symbol, e)
+            result["candles"] = []
+
+        # Funding rate
+        try:
+            result["funding"] = mdf.fetch_funding_rate(symbol)
+        except Exception:
+            result["funding"] = {"current_rate": 0, "avg_7d_rate": 0, "premium": 0}
+
+        # Open interest
+        try:
+            result["open_interest"] = mdf.fetch_open_interest(symbol)
+        except Exception:
+            result["open_interest"] = {"current_oi": 0, "day_ntl_vlm": 0}
+
+        # Order book
+        try:
+            result["order_book"] = mdf.fetch_order_book(symbol, depth=10)
+        except Exception:
+            result["order_book"] = {"bids": [], "asks": [], "spread": 0, "mid_price": 0}
+
+    except Exception as e:
+        app.logger.error("MarketDataFetcher init failed: %s", e)
+
+    # DB-sourced data: snapshot, trades, performance
+    try:
+        db = get_ro_db()
+
+        # Latest market snapshot for this asset
+        snap_row = db.execute(
+            """SELECT price, change_24h_pct, funding_rate, open_interest,
+                      rsi_14, atr_pct, volatility_regime,
+                      market_regime, regime_confidence, adx, choppiness_index,
+                      sentiment_score, sentiment_momentum, sentiment_volume,
+                      sentiment_topics, timestamp
+               FROM market_snapshots
+               WHERE asset = ?
+               ORDER BY timestamp DESC LIMIT 1""",
+            (symbol,),
+        ).fetchone()
+        if snap_row:
+            snap = dict(snap_row)
+            ts = snap.get("timestamp")
+            if hasattr(ts, "isoformat"):
+                snap["timestamp"] = ts.isoformat()
+            result["snapshot"] = snap
+        else:
+            result["snapshot"] = None
+
+        # Trade history for this asset (recent 20)
+        trade_rows = db.execute(
+            """SELECT asset, side, action, size_pct, leverage,
+                      entry_price, exit_price, pnl, pnl_pct, fees,
+                      status, opened_at, closed_at, reasoning
+               FROM trades WHERE asset = ?
+               ORDER BY opened_at DESC LIMIT 20""",
+            (symbol,),
+        ).fetchall()
+        trades = []
+        for t in trade_rows:
+            td = dict(t)
+            for ts_field in ("opened_at", "closed_at"):
+                v = td.get(ts_field)
+                if v and hasattr(v, "isoformat"):
+                    td[ts_field] = v.isoformat()
+            trades.append(td)
+        result["trades"] = trades
+
+        # Per-asset performance (computed from closed trades)
+        perf_rows = db.execute(
+            """SELECT pnl, pnl_pct FROM trades
+               WHERE asset = ? AND status = 'closed'""",
+            (symbol,),
+        ).fetchall()
+        closed = [dict(r) for r in perf_rows]
+        total = len(closed)
+        wins = sum(1 for r in closed if (r.get("pnl") or 0) > 0)
+        total_pnl = sum(float(r.get("pnl") or 0) for r in closed)
+        avg_pnl = total_pnl / total if total > 0 else 0
+        result["performance"] = {
+            "total_trades": total,
+            "wins": wins,
+            "win_rate": wins / total if total > 0 else 0,
+            "total_pnl": total_pnl,
+            "avg_pnl": avg_pnl,
+        }
+
+    except Exception as e:
+        app.logger.error("DB data failed for %s: %s", symbol, e)
+
+    return jsonify(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # MAIN PAGE — EMBEDDED HTML TEMPLATE
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -550,6 +711,8 @@ DASHBOARD_HTML = """
     <title>Grok Trader — Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+    <script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -588,6 +751,22 @@ DASHBOARD_HTML = """
         .scrollable::-webkit-scrollbar { width: 6px; }
         .scrollable::-webkit-scrollbar-track { background: #1a1d29; }
         .scrollable::-webkit-scrollbar-thumb { background: #2a2d3a; border-radius: 3px; }
+        .ticker-link { cursor: pointer; color: #22d3ee; transition: all 0.15s; }
+        .ticker-link:hover { text-decoration: underline; opacity: 0.85; }
+        .modal-backdrop { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px); overflow-y: auto; display: none; }
+        .modal-backdrop.active { display: flex; justify-content: center; padding: 2rem 1rem; }
+        .modal-content { background: #1a1d29; border: 1px solid #2a2d3a; border-radius: 16px; width: 100%; max-width: 900px; position: relative; }
+        .modal-close { position: absolute; top: 16px; right: 16px; background: #2a2d3a; border: none; color: #e1e4eb; width: 32px; height: 32px; border-radius: 50%; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; z-index: 10; }
+        .modal-close:hover { background: #3a3d4a; }
+        .interval-btn { padding: 4px 10px; border-radius: 6px; font-size: 0.7rem; border: 1px solid #2a2d3a; background: transparent; color: #8b8fa3; cursor: pointer; transition: all 0.15s; }
+        .interval-btn:hover { border-color: #6366f1; color: #e1e4eb; }
+        .interval-btn.active { background: #6366f1; border-color: #6366f1; color: white; }
+        .ob-bar { height: 20px; border-radius: 3px; min-width: 2px; transition: width 0.3s; }
+        .ob-bid { background: rgba(34,197,94,0.4); }
+        .ob-ask { background: rgba(239,68,68,0.4); }
+        .metric-card { background: #0f1117; border-radius: 8px; padding: 12px; text-align: center; }
+        .metric-label { font-size: 0.65rem; color: #8b8fa3; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+        .metric-value { font-size: 1.1rem; font-weight: 700; }
     </style>
 </head>
 <body class="min-h-screen text-dark-text">
@@ -808,6 +987,16 @@ DASHBOARD_HTML = """
 
     </main>
 
+    <!-- ASSET DETAIL MODAL -->
+    <div id="asset-modal" class="modal-backdrop" onclick="if(event.target===this)closeAssetModal()">
+        <div class="modal-content">
+            <button class="modal-close" onclick="closeAssetModal()">&times;</button>
+            <div id="asset-modal-body" class="p-6 space-y-5">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+    </div>
+
     <!-- FOOTER -->
     <footer class="text-center text-dark-muted text-xs py-4 border-t border-dark-border">
         Grok Trader &mdash; AI-Powered Crypto Trading &mdash; Read-only dashboard (fast: 15s / slow: 30s)
@@ -894,10 +1083,19 @@ DASHBOARD_HTML = """
             badge.className = 'px-3 py-1 rounded-full text-xs font-medium bg-yellow-500/20 text-yellow-400';
         }
 
-        if (data.online && data.last_cycle_time) {
-            // Check if last cycle was within 30 minutes
-            const lastCycle = new Date(data.last_cycle_time.includes('T') ? data.last_cycle_time : data.last_cycle_time + 'Z');
-            const minutesAgo = (Date.now() - lastCycle.getTime()) / 60000;
+        if (data.online && (data.last_cycle_time || data.last_event)) {
+            // Use the most recent timestamp between grok_logs and cycle_events
+            let lastTs = null;
+            if (data.last_cycle_time) {
+                const s = data.last_cycle_time;
+                lastTs = new Date(s.includes('T') ? s : s + 'Z');
+            }
+            if (data.last_event && data.last_event.timestamp) {
+                const s2 = data.last_event.timestamp;
+                const evTs = new Date(s2.includes('T') ? s2 : s2 + 'Z');
+                if (!lastTs || evTs > lastTs) lastTs = evTs;
+            }
+            const minutesAgo = lastTs ? (Date.now() - lastTs.getTime()) / 60000 : 999;
 
             if (minutesAgo < 30) {
                 dot.className = 'status-dot bg-profit pulse-green';
@@ -983,7 +1181,7 @@ DASHBOARD_HTML = """
 
         tbody.innerHTML = data.positions.map(p => `
             <tr>
-                <td class="font-medium">${escapeHtml(p.asset)}</td>
+                <td class="font-medium"><span class="ticker-link" data-asset="${escapeHtml(p.asset)}">${escapeHtml(p.asset)}</span></td>
                 <td class="${sideColor(p.side)} font-medium uppercase">${escapeHtml(p.side)}</td>
                 <td>${(p.size_pct * 100).toFixed(1)}%</td>
                 <td>${p.leverage}x</td>
@@ -1006,7 +1204,7 @@ DASHBOARD_HTML = """
         tbody.innerHTML = data.trades.map(t => `
             <tr>
                 <td class="text-dark-muted text-xs">${fmtTime(t.opened_at)}</td>
-                <td class="font-medium">${escapeHtml(t.asset)}</td>
+                <td class="font-medium"><span class="ticker-link" data-asset="${escapeHtml(t.asset)}">${escapeHtml(t.asset)}</span></td>
                 <td>${escapeHtml(t.action)}</td>
                 <td class="${sideColor(t.side)} uppercase">${escapeHtml(t.side)}</td>
                 <td>${(t.size_pct * 100).toFixed(1)}%</td>
@@ -1048,7 +1246,7 @@ DASHBOARD_HTML = """
                     const biasColor = info.bias === 'long' ? 'text-profit' : info.bias === 'short' ? 'text-loss' : 'text-dark-muted';
                     html += `
                         <div class="bg-dark-bg rounded p-2 text-xs">
-                            <span class="font-bold uppercase">${escapeHtml(asset)}</span>
+                            <span class="font-bold uppercase ticker-link" data-asset="${escapeHtml(asset)}">${escapeHtml(asset)}</span>
                             <span class="${biasColor} ml-2">${escapeHtml(info.bias || '-')}</span>
                             <span class="text-dark-muted ml-2">${escapeHtml(info.conviction || '-')} conviction</span>
                             ${info.summary ? `<div class="text-dark-muted mt-1">${escapeHtml(info.summary)}</div>` : ''}
@@ -1066,7 +1264,7 @@ DASHBOARD_HTML = """
                 html += `
                     <div class="bg-dark-bg rounded p-2 text-xs mb-1">
                         <span class="font-medium">${escapeHtml(d.action)}</span>
-                        <span class="ml-1">${escapeHtml(d.asset)}</span>
+                        <span class="ml-1 ticker-link" data-asset="${escapeHtml(d.asset)}">${escapeHtml(d.asset)}</span>
                         <span class="text-dark-muted ml-2">${escapeHtml(d.conviction)} conviction</span>
                     </div>
                 `;
@@ -1091,7 +1289,7 @@ DASHBOARD_HTML = """
         tbody.innerHTML = data.rejections.map(r => `
             <tr>
                 <td class="text-dark-muted text-xs">${fmtTime(r.timestamp)}</td>
-                <td class="font-medium">${escapeHtml(r.asset)}</td>
+                <td class="font-medium"><span class="ticker-link" data-asset="${escapeHtml(r.asset)}">${escapeHtml(r.asset)}</span></td>
                 <td>${escapeHtml(r.action)}</td>
                 <td class="text-loss text-xs">${escapeHtml(r.reason)}</td>
             </tr>
@@ -1102,14 +1300,16 @@ DASHBOARD_HTML = """
         const data = await fetchJson('/api/equity-chart');
         if (!data || data.error || !data.equity_curve) return;
 
-        const labels = data.equity_curve.map(d => d.date);
-        const values = data.equity_curve.map(d => d.ending_equity);
+        // Build {x: Date, y: equity} points for time-based axis
+        const points = data.equity_curve.map(d => ({
+            x: new Date(d.date),
+            y: d.ending_equity
+        })).filter(p => !isNaN(p.x));
 
         const ctx = document.getElementById('equityChart').getContext('2d');
 
         if (equityChart) {
-            equityChart.data.labels = labels;
-            equityChart.data.datasets[0].data = values;
+            equityChart.data.datasets[0].data = points;
             equityChart.update('none');
             return;
         }
@@ -1117,15 +1317,14 @@ DASHBOARD_HTML = """
         equityChart = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: labels,
                 datasets: [{
                     label: 'Equity',
-                    data: values,
+                    data: points,
                     borderColor: '#6366f1',
                     backgroundColor: 'rgba(99, 102, 241, 0.1)',
                     fill: true,
                     tension: 0.3,
-                    pointRadius: values.length > 30 ? 0 : 3,
+                    pointRadius: points.length > 30 ? 0 : 3,
                     pointBackgroundColor: '#6366f1',
                     borderWidth: 2,
                 }]
@@ -1143,12 +1342,27 @@ DASHBOARD_HTML = """
                         titleColor: '#e1e4eb',
                         bodyColor: '#8b8fa3',
                         callbacks: {
-                            label: (ctx) => `Equity: $${ctx.raw.toLocaleString('en-US', {minimumFractionDigits: 2})}`
+                            title: (items) => {
+                                if (!items.length) return '';
+                                const d = new Date(items[0].parsed.x);
+                                return d.toLocaleDateString('en-US', {month:'short', day:'numeric'})
+                                     + ' ' + d.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', hour12: false});
+                            },
+                            label: (ctx) => `Equity: $${ctx.parsed.y.toLocaleString('en-US', {minimumFractionDigits: 2})}`
                         }
                     }
                 },
                 scales: {
                     x: {
+                        type: 'time',
+                        time: {
+                            displayFormats: {
+                                minute: 'HH:mm',
+                                hour: 'MMM d HH:mm',
+                                day: 'MMM d',
+                            },
+                            tooltipFormat: 'MMM d HH:mm',
+                        },
                         grid: { color: '#1f2233' },
                         ticks: { color: '#8b8fa3', maxTicksLimit: 10 },
                     },
@@ -1230,7 +1444,15 @@ DASHBOARD_HTML = """
             const meta = document.createElement('div');
             meta.className = 'text-xs text-dark-muted';
             meta.textContent = 'Cycle ' + (ev.cycle_number || '-');
-            if (ev.asset) meta.textContent += ' \u2022 ' + ev.asset;
+            if (ev.asset) {
+                const dot = document.createTextNode(' \u2022 ');
+                meta.appendChild(dot);
+                const assetLink = document.createElement('span');
+                assetLink.className = 'ticker-link';
+                assetLink.dataset.asset = ev.asset;
+                assetLink.textContent = ev.asset;
+                meta.appendChild(assetLink);
+            }
 
             body.appendChild(top);
             body.appendChild(meta);
@@ -1284,7 +1506,8 @@ DASHBOARD_HTML = """
             const nameRow = document.createElement('div');
             nameRow.className = 'flex items-center justify-between mb-2';
             const nameSpan = document.createElement('span');
-            nameSpan.className = 'font-bold text-sm uppercase';
+            nameSpan.className = 'font-bold text-sm uppercase ticker-link';
+            nameSpan.dataset.asset = a.asset || '';
             nameSpan.textContent = a.asset || '';
             const changeSpan = document.createElement('span');
             const chg = parseFloat(a.change_24h_pct) || 0;
@@ -1419,11 +1642,15 @@ DASHBOARD_HTML = """
             tbl.appendChild(thead);
 
             const tbody = document.createElement('tbody');
-            Object.entries(p.asset).forEach(([asset, stats]) => {
+            Object.entries(p.asset).filter(([k, v]) => typeof v === 'object' && v !== null).forEach(([asset, stats]) => {
                 const tr = document.createElement('tr');
                 const tdAsset = document.createElement('td');
                 tdAsset.className = 'font-medium uppercase';
-                tdAsset.textContent = asset;
+                const assetLink = document.createElement('span');
+                assetLink.className = 'ticker-link';
+                assetLink.dataset.asset = asset;
+                assetLink.textContent = asset;
+                tdAsset.appendChild(assetLink);
                 const tdTrades = document.createElement('td');
                 tdTrades.textContent = stats.count || 0;
                 const tdWR = document.createElement('td');
@@ -1472,6 +1699,454 @@ DASHBOARD_HTML = """
             streakEl.appendChild(grid);
         }
     }
+
+    // ─── ASSET DETAIL MODAL ────────────────────────────────
+
+    let assetChart = null;
+    let currentModalAsset = null;
+    let currentModalInterval = '1h';
+
+    function openAssetModal(symbol) {
+        currentModalAsset = symbol.toUpperCase();
+        currentModalInterval = '1h';
+        document.getElementById('asset-modal').classList.add('active');
+        document.body.style.overflow = 'hidden';
+        loadAssetDetail(currentModalAsset, currentModalInterval);
+    }
+
+    function closeAssetModal() {
+        document.getElementById('asset-modal').classList.remove('active');
+        document.body.style.overflow = '';
+        if (assetChart) { assetChart.remove(); assetChart = null; }
+        currentModalAsset = null;
+    }
+
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAssetModal(); });
+
+    async function loadAssetDetail(symbol, interval) {
+        const body = document.getElementById('asset-modal-body');
+        body.innerHTML = '<div class="text-center text-dark-muted py-12">Loading ' + escapeHtml(symbol) + ' data...</div>';
+
+        const data = await fetchJson('/api/asset/' + encodeURIComponent(symbol) + '?interval=' + interval);
+        if (!data || data.error) {
+            body.innerHTML = '<div class="text-center text-loss py-12">Failed to load data for ' + escapeHtml(symbol) + '</div>';
+            return;
+        }
+
+        body.innerHTML = '';
+
+        // ── Header ──
+        const header = document.createElement('div');
+        header.className = 'flex items-center justify-between mb-2';
+        const titleDiv = document.createElement('div');
+        const h2 = document.createElement('h2');
+        h2.className = 'text-2xl font-bold uppercase';
+        h2.textContent = symbol;
+        titleDiv.appendChild(h2);
+        if (data.snapshot) {
+            const sub = document.createElement('div');
+            sub.className = 'flex items-center gap-3 mt-1';
+            const priceSpan = document.createElement('span');
+            priceSpan.className = 'text-lg';
+            priceSpan.textContent = '$' + fmtPrice(parseFloat(data.snapshot.price) || 0);
+            const chgSpan = document.createElement('span');
+            const chg = parseFloat(data.snapshot.change_24h_pct) || 0;
+            chgSpan.className = 'text-sm font-medium ' + pnlColor(chg);
+            chgSpan.textContent = fmtPct(chg) + ' (24h)';
+            sub.appendChild(priceSpan);
+            sub.appendChild(chgSpan);
+            titleDiv.appendChild(sub);
+        }
+        header.appendChild(titleDiv);
+        body.appendChild(header);
+
+        // ── Interval selector ──
+        const intRow = document.createElement('div');
+        intRow.className = 'flex gap-2 mb-3';
+        ['5m','15m','1h','4h','1d'].forEach(iv => {
+            const btn = document.createElement('button');
+            btn.className = 'interval-btn' + (iv === interval ? ' active' : '');
+            btn.textContent = iv;
+            btn.onclick = () => {
+                currentModalInterval = iv;
+                if (assetChart) { assetChart.remove(); assetChart = null; }
+                loadAssetDetail(symbol, iv);
+            };
+            intRow.appendChild(btn);
+        });
+        body.appendChild(intRow);
+
+        // ── Candlestick Chart ──
+        const chartWrap = document.createElement('div');
+        chartWrap.className = 'rounded-lg overflow-hidden';
+        chartWrap.style.height = '340px';
+        chartWrap.style.background = '#0f1117';
+        body.appendChild(chartWrap);
+
+        if (data.candles && data.candles.length > 0 && typeof LightweightCharts !== 'undefined') {
+            if (assetChart) { assetChart.remove(); assetChart = null; }
+            const chart = LightweightCharts.createChart(chartWrap, {
+                width: chartWrap.clientWidth,
+                height: 340,
+                layout: { background: { color: '#0f1117' }, textColor: '#8b8fa3' },
+                grid: { vertLines: { color: '#1f2233' }, horzLines: { color: '#1f2233' } },
+                crosshair: { mode: 0 },
+                timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#2a2d3a' },
+                rightPriceScale: { borderColor: '#2a2d3a' },
+            });
+            assetChart = chart;
+
+            const candleSeries = chart.addCandlestickSeries({
+                upColor: '#22c55e', downColor: '#ef4444',
+                borderUpColor: '#22c55e', borderDownColor: '#ef4444',
+                wickUpColor: '#22c55e', wickDownColor: '#ef4444',
+            });
+            const candleData = data.candles.map(c => ({
+                time: Math.floor(new Date(c.time).getTime() / 1000),
+                open: c.open, high: c.high, low: c.low, close: c.close,
+            }));
+            candleSeries.setData(candleData);
+
+            const volSeries = chart.addHistogramSeries({
+                priceFormat: { type: 'volume' },
+                priceScaleId: 'vol',
+            });
+            chart.priceScale('vol').applyOptions({
+                scaleMargins: { top: 0.85, bottom: 0 },
+            });
+            const volData = data.candles.map(c => ({
+                time: Math.floor(new Date(c.time).getTime() / 1000),
+                value: c.volume,
+                color: c.close >= c.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)',
+            }));
+            volSeries.setData(volData);
+
+            chart.timeScale().fitContent();
+
+            const ro = new ResizeObserver(() => {
+                if (chartWrap.clientWidth > 0) chart.applyOptions({ width: chartWrap.clientWidth });
+            });
+            ro.observe(chartWrap);
+        } else {
+            chartWrap.innerHTML = '<div class="text-dark-muted text-center py-12">No candle data available</div>';
+        }
+
+        // ── Technical Indicators ──
+        if (data.snapshot) {
+            const s = data.snapshot;
+            const techTitle = document.createElement('div');
+            techTitle.className = 'text-dark-muted text-xs uppercase tracking-wide mt-4 mb-2';
+            techTitle.textContent = 'Technical Indicators';
+            body.appendChild(techTitle);
+
+            const techGrid = document.createElement('div');
+            techGrid.className = 'grid grid-cols-3 md:grid-cols-6 gap-2';
+            const rsi = parseFloat(s.rsi_14) || 0;
+            const metrics = [
+                { label: 'RSI (14)', value: rsi.toFixed(1), cls: rsi > 70 ? 'text-loss' : rsi < 30 ? 'text-profit' : '' },
+                { label: 'ATR %', value: ((parseFloat(s.atr_pct) || 0) * 100).toFixed(2) + '%' },
+                { label: 'ADX', value: (parseFloat(s.adx) || 0).toFixed(1) },
+                { label: 'Choppiness', value: (parseFloat(s.choppiness_index) || 0).toFixed(1) },
+                { label: 'Vol Regime', value: (s.volatility_regime || '-').replace(/_/g, ' ') },
+                { label: 'Regime Conf', value: ((parseFloat(s.regime_confidence) || 0) * 100).toFixed(0) + '%' },
+            ];
+            metrics.forEach(m => {
+                const card = document.createElement('div');
+                card.className = 'metric-card';
+                card.innerHTML = '<div class="metric-label">' + escapeHtml(m.label) + '</div>'
+                    + '<div class="metric-value ' + (m.cls || '') + '">' + escapeHtml(m.value) + '</div>';
+                techGrid.appendChild(card);
+            });
+            body.appendChild(techGrid);
+        }
+
+        // ── Funding & Open Interest ──
+        const fundTitle = document.createElement('div');
+        fundTitle.className = 'text-dark-muted text-xs uppercase tracking-wide mt-4 mb-2';
+        fundTitle.textContent = 'Funding & Open Interest';
+        body.appendChild(fundTitle);
+
+        const fundGrid = document.createElement('div');
+        fundGrid.className = 'grid grid-cols-2 md:grid-cols-4 gap-2';
+        const fr = data.funding || {};
+        const oi = data.open_interest || {};
+        const curRate = parseFloat(fr.current_rate) || 0;
+        const fundMetrics = [
+            { label: 'Current Funding', value: (curRate * 100).toFixed(4) + '%', cls: curRate > 0 ? 'text-profit' : curRate < 0 ? 'text-loss' : '' },
+            { label: '7d Avg Funding', value: ((parseFloat(fr.avg_7d_rate) || 0) * 100).toFixed(4) + '%' },
+            { label: 'Open Interest', value: '$' + fmtPrice(parseFloat(oi.current_oi) || 0) },
+            { label: '24h Volume', value: '$' + fmtPrice(parseFloat(oi.day_ntl_vlm) || 0) },
+        ];
+        fundMetrics.forEach(m => {
+            const card = document.createElement('div');
+            card.className = 'metric-card';
+            card.innerHTML = '<div class="metric-label">' + escapeHtml(m.label) + '</div>'
+                + '<div class="metric-value ' + (m.cls || '') + '">' + escapeHtml(m.value) + '</div>';
+            fundGrid.appendChild(card);
+        });
+        body.appendChild(fundGrid);
+
+        // ── Market Regime ──
+        if (data.snapshot && data.snapshot.market_regime) {
+            const regTitle = document.createElement('div');
+            regTitle.className = 'text-dark-muted text-xs uppercase tracking-wide mt-4 mb-2';
+            regTitle.textContent = 'Market Regime';
+            body.appendChild(regTitle);
+
+            const regRow = document.createElement('div');
+            regRow.className = 'flex items-center gap-3';
+            const badge = document.createElement('span');
+            badge.className = 'px-3 py-1 rounded-full text-sm font-medium ' + regimeBadge(data.snapshot.market_regime);
+            badge.textContent = (data.snapshot.market_regime || '').replace(/_/g, ' ');
+            regRow.appendChild(badge);
+
+            const conf = parseFloat(data.snapshot.regime_confidence) || 0;
+            const confBar = document.createElement('div');
+            confBar.className = 'flex-1 h-2 rounded-full bg-dark-bg overflow-hidden';
+            confBar.style.maxWidth = '200px';
+            const confFill = document.createElement('div');
+            confFill.className = 'h-full rounded-full bg-accent';
+            confFill.style.width = (conf * 100) + '%';
+            confBar.appendChild(confFill);
+            regRow.appendChild(confBar);
+
+            const confLabel = document.createElement('span');
+            confLabel.className = 'text-xs text-dark-muted';
+            confLabel.textContent = (conf * 100).toFixed(0) + '% confidence';
+            regRow.appendChild(confLabel);
+            body.appendChild(regRow);
+        }
+
+        // ── Sentiment ──
+        if (data.snapshot) {
+            const sentScore = parseFloat(data.snapshot.sentiment_score);
+            if (!isNaN(sentScore)) {
+                const sentTitle = document.createElement('div');
+                sentTitle.className = 'text-dark-muted text-xs uppercase tracking-wide mt-4 mb-2';
+                sentTitle.textContent = 'X / Twitter Sentiment';
+                body.appendChild(sentTitle);
+
+                const sentRow = document.createElement('div');
+                sentRow.className = 'bg-dark-bg rounded-lg p-3';
+
+                // Score bar
+                const barWrap = document.createElement('div');
+                barWrap.className = 'flex items-center gap-3 mb-2';
+                const barLabel = document.createElement('span');
+                barLabel.className = 'text-sm font-bold';
+                barLabel.style.color = sentimentColor(sentScore);
+                barLabel.textContent = sentScore.toFixed(2);
+                barWrap.appendChild(barLabel);
+
+                const barOuter = document.createElement('div');
+                barOuter.className = 'flex-1 h-3 rounded-full bg-dark-border overflow-hidden relative';
+                const barCenter = document.createElement('div');
+                barCenter.style.cssText = 'position:absolute;left:50%;top:0;bottom:0;width:1px;background:#8b8fa3;';
+                barOuter.appendChild(barCenter);
+                const barFill = document.createElement('div');
+                barFill.className = 'h-full rounded-full';
+                barFill.style.background = sentimentColor(sentScore);
+                const pct = ((sentScore + 1) / 2) * 100;
+                barFill.style.width = pct + '%';
+                barOuter.appendChild(barFill);
+                barWrap.appendChild(barOuter);
+
+                const sentDesc = document.createElement('span');
+                sentDesc.className = 'text-xs text-dark-muted';
+                sentDesc.textContent = sentScore > 0.3 ? 'Bullish' : sentScore < -0.3 ? 'Bearish' : 'Neutral';
+                barWrap.appendChild(sentDesc);
+                sentRow.appendChild(barWrap);
+
+                // Momentum + volume
+                const sentMeta = document.createElement('div');
+                sentMeta.className = 'flex gap-4 text-xs text-dark-muted';
+                const momRaw = data.snapshot.sentiment_momentum;
+                if (momRaw != null && momRaw !== '') {
+                    const momSpan = document.createElement('span');
+                    const momNum = parseFloat(momRaw);
+                    if (!isNaN(momNum)) {
+                        momSpan.textContent = 'Momentum: ' + (momNum > 0 ? '+' : '') + momNum.toFixed(2);
+                    } else {
+                        // String enum: "bullish", "bearish", "neutral"
+                        momSpan.textContent = 'Momentum: ' + momRaw;
+                    }
+                    sentMeta.appendChild(momSpan);
+                }
+                const volRaw = data.snapshot.sentiment_volume;
+                if (volRaw != null && volRaw !== '') {
+                    const volSpan = document.createElement('span');
+                    const volNum = parseInt(volRaw);
+                    if (!isNaN(volNum) && volNum > 0) {
+                        volSpan.textContent = 'Volume: ' + volNum;
+                    } else if (typeof volRaw === 'string' && volRaw.length > 0) {
+                        // String enum: "high", "normal", "low"
+                        volSpan.textContent = 'Volume: ' + volRaw;
+                    }
+                    sentMeta.appendChild(volSpan);
+                }
+                sentRow.appendChild(sentMeta);
+
+                // Topics
+                if (data.snapshot.sentiment_topics) {
+                    let topics = data.snapshot.sentiment_topics;
+                    if (typeof topics === 'string') {
+                        try { topics = JSON.parse(topics); } catch(e) { topics = topics.split(','); }
+                    }
+                    if (Array.isArray(topics) && topics.length > 0) {
+                        const topicDiv = document.createElement('div');
+                        topicDiv.className = 'flex flex-wrap gap-1 mt-2';
+                        topics.slice(0, 8).forEach(t => {
+                            const tag = document.createElement('span');
+                            tag.className = 'px-2 py-0.5 rounded-full text-xs bg-accent/20 text-accent';
+                            tag.textContent = String(t).trim();
+                            topicDiv.appendChild(tag);
+                        });
+                        sentRow.appendChild(topicDiv);
+                    }
+                }
+                body.appendChild(sentRow);
+            }
+        }
+
+        // ── Order Book ──
+        const ob = data.order_book || {};
+        if ((ob.bids && ob.bids.length) || (ob.asks && ob.asks.length)) {
+            const obTitle = document.createElement('div');
+            obTitle.className = 'text-dark-muted text-xs uppercase tracking-wide mt-4 mb-2';
+            obTitle.textContent = 'Order Book Depth';
+            body.appendChild(obTitle);
+
+            const obWrap = document.createElement('div');
+            obWrap.className = 'bg-dark-bg rounded-lg p-3';
+
+            // Spread info
+            const spreadInfo = document.createElement('div');
+            spreadInfo.className = 'flex justify-between text-xs text-dark-muted mb-2';
+            spreadInfo.innerHTML = '<span>Spread: $' + fmtPrice(ob.spread || 0) + '</span>'
+                + '<span>Mid: $' + fmtPrice(ob.mid_price || 0) + '</span>';
+            obWrap.appendChild(spreadInfo);
+
+            const maxSize = Math.max(
+                ...((ob.bids || []).map(b => b.size)),
+                ...((ob.asks || []).map(a => a.size)),
+                0.001
+            );
+
+            // Bids
+            const bidsDiv = document.createElement('div');
+            bidsDiv.className = 'space-y-1 mb-2';
+            (ob.bids || []).slice(0, 8).forEach(b => {
+                const row = document.createElement('div');
+                row.className = 'flex items-center gap-2 text-xs';
+                const price = document.createElement('span');
+                price.className = 'w-24 text-right text-profit';
+                price.textContent = '$' + fmtPrice(b.price);
+                const bar = document.createElement('div');
+                bar.className = 'flex-1';
+                const fill = document.createElement('div');
+                fill.className = 'ob-bar ob-bid';
+                fill.style.width = ((b.size / maxSize) * 100) + '%';
+                bar.appendChild(fill);
+                const size = document.createElement('span');
+                size.className = 'w-20 text-right text-dark-muted';
+                size.textContent = b.size.toFixed(4);
+                row.appendChild(price);
+                row.appendChild(bar);
+                row.appendChild(size);
+                bidsDiv.appendChild(row);
+            });
+            obWrap.appendChild(bidsDiv);
+
+            // Asks
+            const asksDiv = document.createElement('div');
+            asksDiv.className = 'space-y-1';
+            (ob.asks || []).slice(0, 8).forEach(a => {
+                const row = document.createElement('div');
+                row.className = 'flex items-center gap-2 text-xs';
+                const price = document.createElement('span');
+                price.className = 'w-24 text-right text-loss';
+                price.textContent = '$' + fmtPrice(a.price);
+                const bar = document.createElement('div');
+                bar.className = 'flex-1';
+                const fill = document.createElement('div');
+                fill.className = 'ob-bar ob-ask';
+                fill.style.width = ((a.size / maxSize) * 100) + '%';
+                bar.appendChild(fill);
+                const size = document.createElement('span');
+                size.className = 'w-20 text-right text-dark-muted';
+                size.textContent = a.size.toFixed(4);
+                row.appendChild(price);
+                row.appendChild(bar);
+                row.appendChild(size);
+                asksDiv.appendChild(row);
+            });
+            obWrap.appendChild(asksDiv);
+            body.appendChild(obWrap);
+        }
+
+        // ── Performance Stats ──
+        const perf = data.performance || {};
+        if (perf.total_trades != null) {
+            const perfTitle = document.createElement('div');
+            perfTitle.className = 'text-dark-muted text-xs uppercase tracking-wide mt-4 mb-2';
+            perfTitle.textContent = 'Performance — ' + symbol;
+            body.appendChild(perfTitle);
+
+            const perfGrid = document.createElement('div');
+            perfGrid.className = 'grid grid-cols-2 md:grid-cols-4 gap-2';
+            const wr = perf.total_trades > 0 ? perf.win_rate * 100 : 0;
+            const perfMetrics = [
+                { label: 'Total Trades', value: perf.total_trades },
+                { label: 'Win Rate', value: fmtPct(wr, false), cls: wr >= 50 ? 'text-profit' : wr > 0 ? 'text-loss' : '' },
+                { label: 'Total P&L', value: fmtUsd(perf.total_pnl || 0), cls: pnlColor(perf.total_pnl || 0) },
+                { label: 'Avg P&L', value: fmtUsd(perf.avg_pnl || 0), cls: pnlColor(perf.avg_pnl || 0) },
+            ];
+            perfMetrics.forEach(m => {
+                const card = document.createElement('div');
+                card.className = 'metric-card';
+                card.innerHTML = '<div class="metric-label">' + escapeHtml(m.label) + '</div>'
+                    + '<div class="metric-value ' + (m.cls || '') + '">' + escapeHtml(String(m.value)) + '</div>';
+                perfGrid.appendChild(card);
+            });
+            body.appendChild(perfGrid);
+        }
+
+        // ── Trade History ──
+        if (data.trades && data.trades.length > 0) {
+            const trTitle = document.createElement('div');
+            trTitle.className = 'text-dark-muted text-xs uppercase tracking-wide mt-4 mb-2';
+            trTitle.textContent = 'Recent Trades — ' + symbol;
+            body.appendChild(trTitle);
+
+            const tbl = document.createElement('table');
+            tbl.className = 'text-xs';
+            tbl.innerHTML = '<thead><tr><th>Time</th><th>Action</th><th>Side</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Status</th></tr></thead>';
+            const tbody = document.createElement('tbody');
+            data.trades.forEach(t => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td class="text-dark-muted">' + fmtTime(t.opened_at) + '</td>'
+                    + '<td>' + escapeHtml(t.action) + '</td>'
+                    + '<td class="' + sideColor(t.side) + ' uppercase">' + escapeHtml(t.side) + '</td>'
+                    + '<td>' + fmtPrice(t.entry_price) + '</td>'
+                    + '<td>' + fmtPrice(t.exit_price) + '</td>'
+                    + '<td class="' + pnlColor(t.pnl) + '">' + (t.pnl != null ? fmtUsd(t.pnl) : '-') + '</td>'
+                    + '<td><span class="px-2 py-0.5 rounded text-xs ' + (t.status === 'open' ? 'bg-accent/20 text-accent' : 'bg-dark-border text-dark-muted') + '">' + escapeHtml(t.status) + '</span></td>';
+                tbody.appendChild(tr);
+            });
+            tbl.appendChild(tbody);
+            body.appendChild(tbl);
+        }
+    }
+
+    // ─── EVENT DELEGATION FOR TICKER CLICKS ──────────────────
+
+    document.addEventListener('click', e => {
+        const link = e.target.closest('.ticker-link');
+        if (link && link.dataset.asset) {
+            e.preventDefault();
+            openAssetModal(link.dataset.asset);
+        }
+    });
 
     // ─── DUAL-SPEED POLLING ─────────────────────────────────
 

@@ -186,6 +186,34 @@ class DecisionParser:
             if not isinstance(d, dict):
                 continue
 
+            # Fix non-numeric values: Grok sometimes returns "N/A", null,
+            # or omits numeric fields in no_trade/hold decisions. Replace with 0.
+            _NUMERIC_FIELDS = (
+                "size_pct", "leverage", "stop_loss", "take_profit",
+                "risk_reward_ratio", "entry_price",
+            )
+            for field in _NUMERIC_FIELDS:
+                val = d.get(field)
+                if val is None or not isinstance(val, (int, float)):
+                    d[field] = 0.0
+                    if val is not None:
+                        logger.debug("Normalized non-numeric {}: '{}' -> 0.0", field, val)
+
+            # Fix non-string values for string fields (including null)
+            _STRING_DEFAULTS = {
+                "order_type": "market",
+                "conviction": "low",
+                "reasoning": "",
+                "action": "no_trade",
+            }
+            for field in ("order_type", "action", "reasoning", "conviction", "asset"):
+                val = d.get(field)
+                if val is None and field in _STRING_DEFAULTS:
+                    d[field] = _STRING_DEFAULTS[field]
+                    logger.debug("Normalized null {}: None -> '{}'", field, d[field])
+                elif val is not None and not isinstance(val, str):
+                    d[field] = str(val)
+
             # Fix size_pct: if >= 1.0, Grok likely returned a percentage.
             # A value of 1.0 means "100%" (not "1%") since max position
             # size is 25% — no valid trade uses 100% of capital as a decimal.
@@ -196,6 +224,11 @@ class DecisionParser:
                     "Normalized size_pct: {} -> {}",
                     size_pct, d["size_pct"],
                 )
+
+            # Fix leverage: must be >= 1.0 for Pydantic validation
+            leverage = d.get("leverage")
+            if isinstance(leverage, (int, float)) and leverage < 1.0:
+                d["leverage"] = 1.0
 
             # Fix risk_reward_ratio: ensure non-negative
             rr = d.get("risk_reward_ratio")

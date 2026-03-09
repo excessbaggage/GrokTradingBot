@@ -589,12 +589,19 @@ class RiskGuardian:
                         ),
                     )
         except Exception as exc:
-            # Fail-open for this check only: the trades table may not exist
-            # yet during initial setup.  Log the issue clearly.
-            logger.warning(
-                "Could not query last trade time for {asset}: {err}",
+            # Fail-CLOSED: if we cannot verify the time gap, reject the trade
+            # to prevent rapid-fire trading during DB outages.
+            logger.error(
+                "Could not query last trade time for {asset}: {err} — failing closed",
                 asset=decision.asset,
                 err=str(exc),
+            )
+            return RiskValidationResult(
+                approved=False,
+                reason=(
+                    f"Database error while checking time between trades for "
+                    f"{decision.asset}. Rejecting trade to fail safely."
+                ),
             )
 
         return RiskValidationResult(approved=True)
@@ -674,7 +681,10 @@ class RiskGuardian:
             row = cursor.fetchone()
             return row["cnt"] if row else 0
         except Exception as exc:
-            logger.warning(
-                "Could not count today's trades: {err}", err=str(exc),
+            # Fail-CLOSED: return a high count so the daily limit check
+            # rejects new trades when the DB is unreachable.
+            logger.error(
+                "Could not count today's trades: {err} — failing closed (returning 999)",
+                err=str(exc),
             )
-            return 0
+            return 999

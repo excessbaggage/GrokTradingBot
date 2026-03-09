@@ -1,5 +1,5 @@
 """
-Backtesting engine for the Sentinel trading bot.
+Backtesting engine for the Grok Trader trading bot.
 
 Provides historical data loading, event-driven trade simulation with full
 RiskGuardian integration, performance metrics, and pre-built strategy

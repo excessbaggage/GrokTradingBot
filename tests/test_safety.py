@@ -532,7 +532,9 @@ class TestPhantomEquityFallback:
         """Verify there is no hardcoded 10_000 or 10000 equity fallback in order_manager.py."""
         import re
 
-        with open("/Users/alexwhitesides/ClaudeCowork/GrokTradingBot/execution/order_manager.py") as f:
+        import pathlib
+        _project_root = pathlib.Path(__file__).resolve().parent.parent
+        with open(_project_root / "execution" / "order_manager.py") as f:
             content = f.read()
 
         # Look for the specific pattern of hardcoded fallback

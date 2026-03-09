@@ -571,8 +571,8 @@ class TestContextBuilderIntegration:
             risk_status=minimal_risk_status,
             liquidation_data={"BTC": btc_heatmap},
         )
-        assert "Liquidation Heatmap" in prompt
-        assert "Nearest long liq cluster" in prompt
+        assert "Liq:" in prompt
+        assert "long=" in prompt
 
     def test_liquidation_data_omitted_when_none(
         self,
@@ -596,7 +596,7 @@ class TestContextBuilderIntegration:
             risk_status=minimal_risk_status,
             liquidation_data=None,
         )
-        assert "Liquidation Heatmap" not in prompt
+        assert "Liq:" not in prompt
 
     def test_liquidation_data_for_specific_asset_only(
         self,
@@ -632,7 +632,7 @@ class TestContextBuilderIntegration:
             liquidation_data={"BTC": btc_heatmap},
         )
         # Should appear exactly once (for BTC only)
-        assert prompt.count("Liquidation Heatmap") == 1
+        assert prompt.count("Liq:") == 1
 
     def test_backward_compatible_without_liquidation_param(
         self,
@@ -646,7 +646,7 @@ class TestContextBuilderIntegration:
             recent_trades=[],
             risk_status=minimal_risk_status,
         )
-        assert "YOUR TASK" in prompt
+        assert "TASK" in prompt
 
     def test_liquidation_appears_in_asset_section(
         self,
@@ -673,7 +673,7 @@ class TestContextBuilderIntegration:
             risk_status=minimal_risk_status,
             liquidation_data={"BTC": btc_heatmap},
         )
-        liq_pos = prompt.index("Liquidation Heatmap")
+        liq_pos = prompt.index("Liq:")
         portfolio_pos = prompt.index("YOUR CURRENT PORTFOLIO")
         assert liq_pos < portfolio_pos
 

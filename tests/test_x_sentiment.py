@@ -433,11 +433,9 @@ class TestContextBuilderIntegration:
             sentiment_data=sentiment,
         )
 
-        assert "X Sentiment Score" in context
-        assert "+0.72" in context
-        assert "BULLISH" in context
-        assert "HIGH" in context
-        assert "ETF inflows" in context
+        assert "X=+0.72" in context
+        assert "mom=bullish" in context
+        assert "vol=high" in context
 
     def test_no_sentiment_renders_clean(self) -> None:
         """Context builder should work fine with no sentiment data."""
@@ -473,8 +471,8 @@ class TestContextBuilderIntegration:
             risk_status=risk_status,
         )
 
-        assert "X Sentiment Score" not in context
-        assert "BTC-USD Perpetual" in context  # Still renders normal data
+        assert "X=" not in context
+        assert "### BTC" in context  # Still renders normal data
 
     def test_empty_dict_sentiment_renders_clean(self) -> None:
         """Context builder should handle empty dict (all fetches failed) correctly."""
@@ -512,8 +510,8 @@ class TestContextBuilderIntegration:
             sentiment_data={},
         )
 
-        assert "X Sentiment Score" not in context
-        assert "BTC-USD Perpetual" in context
+        assert "X=" not in context
+        assert "### BTC" in context
 
     def test_negative_sentiment_renders_correctly(self) -> None:
         """Negative sentiment scores should render with minus sign."""
@@ -559,9 +557,9 @@ class TestContextBuilderIntegration:
             sentiment_data=sentiment,
         )
 
-        assert "-0.45" in context
-        assert "BEARISH" in context
-        assert "LOW" in context
+        assert "X=-0.45" in context
+        assert "mom=bearish" in context
+        assert "vol=low" in context
 
 
 # ======================================================================

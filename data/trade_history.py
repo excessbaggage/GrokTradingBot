@@ -137,7 +137,7 @@ class TradeHistoryManager:
             SET exit_price = ?,
                 pnl        = ?,
                 pnl_pct    = ?,
-                fees       = ?,
+                fees       = COALESCE(fees, 0) + ?,
                 status     = 'closed',
                 closed_at  = ?
             WHERE id = ?

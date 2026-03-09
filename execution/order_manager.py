@@ -163,6 +163,10 @@ class OrderManager:
         if decision.action == "close":
             return self.close_position(decision.asset)
 
+        # Route "adjust_stop" — update the stop-loss, don't open a new position
+        if decision.action == "adjust_stop":
+            return self._adjust_stop_loss(decision)
+
         if self.live:
             return self._place_live_order(decision, portfolio_equity)
         return self._place_paper_order(decision, portfolio_equity)
@@ -223,6 +227,130 @@ class OrderManager:
         if self.live:
             return self._close_live_position(asset, size)
         return self._close_paper_position(asset, size)
+
+    # ------------------------------------------------------------------
+    # Adjust stop-loss
+    # ------------------------------------------------------------------
+
+    def _adjust_stop_loss(self, decision: TradeDecision) -> dict[str, Any]:
+        """Update the stop-loss for an existing position.
+
+        In paper mode, updates the in-memory paper state.
+        In live mode, cancels the old SL trigger order and places a new one.
+
+        Args:
+            decision: A TradeDecision with action ``"adjust_stop"`` and
+                      a new ``stop_loss`` price.
+
+        Returns:
+            Order result dict.
+        """
+        asset = decision.asset
+        new_sl = decision.stop_loss
+
+        if not self.live:
+            # Paper mode: update in-memory state
+            if asset not in _paper_state.positions:
+                return self._error_result(asset, f"No paper position for {asset} to adjust SL.")
+
+            old_sl = _paper_state.positions[asset].get("stop_loss", 0)
+            _paper_state.positions[asset]["stop_loss"] = new_sl
+
+            # Cancel old SL order and create new one
+            for oid, order in list(_paper_state.orders.items()):
+                if (
+                    order.get("asset") == asset
+                    and order.get("type") == "stop_loss"
+                    and order.get("status") == "open"
+                ):
+                    _paper_state.orders[oid]["status"] = "cancelled"
+
+            new_sl_oid = f"paper_sl_{uuid.uuid4().hex[:8]}"
+            pos = _paper_state.positions[asset]
+            is_long = pos["side"] == "long"
+            _paper_state.orders[new_sl_oid] = {
+                "order_id": new_sl_oid,
+                "asset": asset,
+                "type": "stop_loss",
+                "trigger_price": new_sl,
+                "side": "sell" if is_long else "buy",
+                "size_pct": pos["size_pct"],
+                "status": "open",
+            }
+
+            logger.info(
+                "PAPER SL ADJUSTED | {asset} old_sl={old} new_sl={new}",
+                asset=asset, old=old_sl, new=new_sl,
+            )
+            return {
+                "order_id": new_sl_oid,
+                "asset": asset,
+                "side": "adjust_stop",
+                "size_pct": 0.0,
+                "fill_price": 0.0,
+                "status": "filled",
+                "fees": 0.0,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "live": False,
+            }
+        else:
+            # Live mode: cancel existing SL and place a new one
+            try:
+                # Cancel existing SL orders for this asset
+                open_orders = self.get_open_orders(asset)
+                for order in open_orders:
+                    # Trigger orders have orderType containing "trigger"
+                    if order.get("orderType") in ("Stop Market", "trigger"):
+                        oid = str(order.get("oid", ""))
+                        if oid:
+                            self.cancel_order(oid, asset)
+
+                # Get current position to determine size and direction
+                address = HYPERLIQUID_WALLET_ADDRESS
+                positions = self.info.user_state(address).get("assetPositions", [])
+                target = None
+                for pos in positions:
+                    pos_info = pos.get("position", {})
+                    if pos_info.get("coin") == asset:
+                        target = pos_info
+                        break
+
+                if target is None:
+                    return self._error_result(asset, f"No live position for {asset} to adjust SL.")
+
+                pos_size = abs(float(target.get("szi", 0)))
+                is_long = float(target.get("szi", 0)) > 0
+
+                new_sl_oid = self._place_trigger_order_with_retry(
+                    asset=asset,
+                    is_buy=not is_long,
+                    sz=pos_size,
+                    trigger_price=new_sl,
+                    tpsl="sl",
+                    label="adjusted-stop-loss",
+                )
+
+                logger.info(
+                    "LIVE SL ADJUSTED | {asset} new_sl={sl} oid={oid}",
+                    asset=asset, sl=new_sl, oid=new_sl_oid,
+                )
+                return {
+                    "order_id": new_sl_oid,
+                    "asset": asset,
+                    "side": "adjust_stop",
+                    "size_pct": 0.0,
+                    "fill_price": 0.0,
+                    "status": "filled" if new_sl_oid else "error",
+                    "fees": 0.0,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "live": True,
+                }
+            except Exception as exc:
+                logger.error(
+                    "LIVE SL ADJUST FAILED | {asset} | {err}",
+                    asset=asset, err=exc,
+                )
+                return self._error_result(asset, str(exc))
 
     # ------------------------------------------------------------------
     # Live order methods
@@ -537,6 +665,37 @@ class OrderManager:
                 new_side=side_str,
                 new_entry=fill_price,
             )
+            # Close the old position in-memory and mark the DB trade closed
+            try:
+                self._close_paper_position(asset)
+            except Exception as close_exc:
+                logger.error(
+                    "PAPER: Failed to close old {asset} position before overwrite: {err}",
+                    asset=asset, err=close_exc,
+                )
+            # Also close the DB trade record for this asset
+            try:
+                from data.database import get_db_connection
+                _db = get_db_connection()
+                try:
+                    _db.execute(
+                        """UPDATE trades
+                           SET status = 'closed',
+                               exit_price = ?,
+                               pnl_pct = 0,
+                               closed_at = ?,
+                               reasoning = COALESCE(reasoning, '') || ' [closed: overwritten by new position]'
+                           WHERE asset = ? AND status = 'open'""",
+                        (fill_price, datetime.now(timezone.utc).isoformat(), asset),
+                    )
+                    _db.commit()
+                finally:
+                    _db.close()
+            except Exception as db_exc:
+                logger.error(
+                    "PAPER: Failed to close old DB trade for {asset}: {err}",
+                    asset=asset, err=db_exc,
+                )
             # Cancel any dangling SL/TP orders from the old position
             for oid, order in list(_paper_state.orders.items()):
                 if order.get("asset") == asset and order.get("status") == "open":
@@ -641,14 +800,15 @@ class OrderManager:
         pos = _paper_state.positions[asset]
         mark_price = self._get_mark_price(asset) or pos["entry_price"]
 
-        # Calculate P&L
+        # Calculate P&L (including leverage for perp futures)
         entry = pos["entry_price"]
         is_long = pos["side"] == "long"
+        leverage = pos.get("leverage", 1.0)
 
         if is_long:
-            pnl_pct = (mark_price - entry) / entry if entry > 0 else 0.0
+            pnl_pct = (mark_price - entry) / entry * leverage if entry > 0 else 0.0
         else:
-            pnl_pct = (entry - mark_price) / entry if entry > 0 else 0.0
+            pnl_pct = (entry - mark_price) / entry * leverage if entry > 0 else 0.0
 
         close_result = {
             "order_id": f"paper_close_{uuid.uuid4().hex[:8]}",

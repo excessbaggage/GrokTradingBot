@@ -191,11 +191,81 @@ class TestParseMissingFields:
         parser: DecisionParser,
         sample_grok_response_dict: dict,
     ) -> None:
-        """A decision missing the 'action' field should return None."""
+        """A decision missing fields should be normalized and parsed successfully.
+
+        The normalizer fills in sensible defaults (action='no_trade',
+        order_type='market', conviction='low', etc.) so the cycle isn't
+        wasted when Grok returns null for hold/no_trade fields.
+        """
         bad = sample_grok_response_dict.copy()
         bad["decisions"] = [{"asset": "BTC", "size_pct": 0.05}]
         result = parser.parse_response(json.dumps(bad))
-        assert result is None
+        assert result is not None
+        assert len(result.decisions) == 1
+        d = result.decisions[0]
+        assert d.action == "no_trade"
+        assert d.order_type == "market"
+        assert d.conviction == "low"
+        assert d.stop_loss == 0.0
+        assert d.take_profit == 0.0
+        assert d.leverage == 1.0  # bumped from 0.0 by normalization
+        assert d.risk_reward_ratio == 0.0
+
+    def test_parse_null_decision_fields(
+        self,
+        parser: DecisionParser,
+        sample_grok_response_dict: dict,
+    ) -> None:
+        """Decisions with explicit null values should be normalized, not rejected.
+
+        Grok returns null for trade-specific fields on no_trade/hold decisions.
+        Previously this caused Pydantic validation to fail (13 errors).
+        """
+        bad = sample_grok_response_dict.copy()
+        bad["decisions"] = [
+            {
+                "action": "hold",
+                "asset": "BTC",
+                "size_pct": None,
+                "leverage": None,
+                "entry_price": None,
+                "stop_loss": None,
+                "take_profit": None,
+                "order_type": None,
+                "reasoning": None,
+                "conviction": None,
+                "risk_reward_ratio": None,
+            },
+            {
+                "action": None,
+                "asset": "ETH",
+                "size_pct": None,
+                "leverage": None,
+                "stop_loss": None,
+                "take_profit": None,
+                "order_type": None,
+                "reasoning": "No setup",
+                "conviction": None,
+                "risk_reward_ratio": None,
+            },
+        ]
+        result = parser.parse_response(json.dumps(bad))
+        assert result is not None
+        assert len(result.decisions) == 2
+
+        d0 = result.decisions[0]
+        assert d0.action == "hold"
+        assert d0.size_pct == 0.0
+        assert d0.leverage == 1.0
+        assert d0.stop_loss == 0.0
+        assert d0.take_profit == 0.0
+        assert d0.order_type == "market"
+        assert d0.conviction == "low"
+        assert d0.risk_reward_ratio == 0.0
+
+        d1 = result.decisions[1]
+        assert d1.action == "no_trade"  # null action normalized to no_trade
+        assert d1.reasoning == "No setup"  # non-null values preserved
 
 
 # ======================================================================

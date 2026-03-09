@@ -29,8 +29,8 @@ class AssetAnalysis(BaseModel):
     bias: str  # "long", "short", "neutral"
     conviction: str  # "none", "low", "medium", "high"
     key_levels: KeyLevels
-    sentiment_read: str
-    funding_rate_signal: str
+    sentiment_read: Optional[str] = None  # Removed from compact prompt to save tokens
+    funding_rate_signal: Optional[str] = None  # Removed from compact prompt to save tokens
     entry_conditions_met: Optional[int] = None  # 0-5 N-of-M conditions met
     summary: str
 
@@ -85,7 +85,7 @@ class PortfolioAssessment(BaseModel):
     """Grok's assessment of the current portfolio state and suggested adjustments."""
 
     current_risk_level: str  # "low", "moderate", "elevated", "high"
-    recent_performance_note: str
+    recent_performance_note: Optional[str] = None  # Removed from compact prompt
     suggested_exposure_adjustment: str  # "increase", "maintain", "decrease"
 
 
@@ -105,8 +105,8 @@ class TradeDecision(BaseModel):
     size_pct: float = Field(ge=0.0, le=1.0)  # Risk Guardian enforces actual limit
     leverage: float = Field(ge=1.0, le=3.0)
     entry_price: Optional[float] = None
-    stop_loss: float
-    take_profit: float
+    stop_loss: float = Field(ge=0)
+    take_profit: float = Field(ge=0)
     order_type: str  # "market", "limit"
     reasoning: str
     conviction: str  # "medium", "high"
@@ -134,12 +134,12 @@ class GrokResponse(BaseModel):
     the raw AI JSON output against.
     """
 
-    timestamp: str
+    timestamp: Optional[str] = None  # Removed from compact prompt
     market_analysis: MarketAnalysis
     portfolio_assessment: PortfolioAssessment
     decisions: list[TradeDecision]
     overall_stance: str
-    next_review_suggestion_minutes: int = Field(ge=5, le=1440)
+    next_review_suggestion_minutes: Optional[int] = Field(default=None, ge=5, le=1440)
 
 
 class RiskValidationResult(BaseModel):

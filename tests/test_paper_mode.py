@@ -178,6 +178,7 @@ def guardian() -> RiskGuardian:
 def paper_db() -> sqlite3.Connection:
     """In-memory SQLite DB for paper mode integration tests."""
     conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
     _create_trades_table(conn)
     yield conn
     conn.close()

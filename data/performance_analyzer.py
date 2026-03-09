@@ -1,5 +1,5 @@
 """
-Trade performance analytics for the Sentinel trading bot.
+Trade performance analytics for the Grok Trader trading bot.
 
 Mines the PostgreSQL trade history to produce actionable insights that
 Grok can learn from -- strategy win rates, asset performance, timing
@@ -673,9 +673,10 @@ class TradePerformanceAnalyzer:
         pnls = [t["pnl"] for t in trades]
         pnl_pcts = [t.get("pnl_pct", 0.0) for t in trades]
         wins = sum(1 for p in pnls if p > 0)
+        non_breakeven = sum(1 for p in pnls if p != 0)
 
         return {
-            "win_rate": wins / len(pnls),
+            "win_rate": wins / non_breakeven if non_breakeven > 0 else 0.0,
             "avg_pnl": round(sum(pnls) / len(pnls), 2),
             "avg_pnl_pct": round(sum(pnl_pcts) / len(pnl_pcts), 4),
             "total_pnl": round(sum(pnls), 2),
