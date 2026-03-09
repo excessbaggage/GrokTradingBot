@@ -155,49 +155,49 @@ def healthy_portfolio() -> dict[str, Any]:
 
 @pytest.fixture
 def daily_loss_portfolio() -> dict[str, Any]:
-    """A portfolio that has hit the 6% daily loss limit."""
+    """A portfolio that has hit the 10% daily loss limit."""
     return {
-        "equity": 9_400.0,
+        "equity": 9_000.0,
         "peak_equity": 10_000.0,
-        "daily_pnl_pct": -0.06,
-        "weekly_pnl_pct": -0.06,
+        "daily_pnl_pct": -0.10,
+        "weekly_pnl_pct": -0.10,
         "total_exposure_pct": 0.0,
     }
 
 
 @pytest.fixture
 def weekly_loss_portfolio() -> dict[str, Any]:
-    """A portfolio that has hit the 12% weekly loss limit."""
+    """A portfolio that has hit the 20% weekly loss limit."""
     return {
-        "equity": 8_800.0,
+        "equity": 8_000.0,
         "peak_equity": 10_000.0,
-        "daily_pnl_pct": -0.03,
-        "weekly_pnl_pct": -0.12,
+        "daily_pnl_pct": -0.05,
+        "weekly_pnl_pct": -0.20,
         "total_exposure_pct": 0.0,
     }
 
 
 @pytest.fixture
 def drawdown_portfolio() -> dict[str, Any]:
-    """A portfolio at 20% total drawdown from peak."""
+    """A portfolio at 35% total drawdown from peak (triggers kill switch)."""
     return {
-        "equity": 8_000.0,
+        "equity": 6_500.0,
         "peak_equity": 10_000.0,
-        "daily_pnl_pct": -0.02,
-        "weekly_pnl_pct": -0.08,
+        "daily_pnl_pct": -0.05,
+        "weekly_pnl_pct": -0.10,
         "total_exposure_pct": 0.0,
     }
 
 
 @pytest.fixture
 def high_exposure_portfolio() -> dict[str, Any]:
-    """A portfolio with 55% existing exposure (close to 60% limit)."""
+    """A portfolio with 80% existing exposure (close to 85% limit)."""
     return {
         "equity": 10_000.0,
         "peak_equity": 10_000.0,
         "daily_pnl_pct": 0.0,
         "weekly_pnl_pct": 0.0,
-        "total_exposure_pct": 0.55,
+        "total_exposure_pct": 0.80,
     }
 
 

@@ -211,6 +211,12 @@ class DecisionParser:
                 if val is None and field in _STRING_DEFAULTS:
                     d[field] = _STRING_DEFAULTS[field]
                     logger.debug("Normalized null {}: None -> '{}'", field, d[field])
+                elif field == "asset" and d.get("action", "") in ("no_trade", "hold"):
+                    # Grok returns null/"ALL"/invalid asset for no_trade/hold — use placeholder
+                    from config.trading_config import ASSET_UNIVERSE
+                    if val is None or (isinstance(val, str) and val.strip().upper() not in ASSET_UNIVERSE):
+                        d[field] = "BTC"  # Placeholder; ignored for non-actionable decisions
+                        logger.debug("Normalized invalid asset '{}' on {} decision -> 'BTC'", val, d.get("action"))
                 elif val is not None and not isinstance(val, str):
                     d[field] = str(val)
 

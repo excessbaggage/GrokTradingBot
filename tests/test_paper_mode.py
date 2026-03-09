@@ -567,10 +567,10 @@ class TestFullCyclePaperMode:
 
         # Step 3: Portfolio has breached daily loss limit
         bad_portfolio: dict[str, Any] = {
-            "equity": 9_400.0,
+            "equity": 9_000.0,
             "peak_equity": 10_000.0,
-            "daily_pnl_pct": -0.06,  # Over the 5% daily limit
-            "weekly_pnl_pct": -0.06,
+            "daily_pnl_pct": -0.10,  # At the 10% daily limit
+            "weekly_pnl_pct": -0.10,
             "total_exposure_pct": 0.0,
         }
 

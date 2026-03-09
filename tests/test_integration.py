@@ -1369,16 +1369,16 @@ class TestKillSwitchPersistence:
         conn.close()
 
     def test_drawdown_auto_activates_kill_switch(self):
-        """20% drawdown from peak automatically triggers kill switch."""
+        """35% drawdown from peak automatically triggers kill switch."""
         conn = _make_db()
         guardian = RiskGuardian(risk_params=RISK_PARAMS.copy())
 
         decision = _make_valid_decision()
         portfolio = {
-            "equity": 8_000.0,
+            "equity": 6_500.0,
             "peak_equity": 10_000.0,
-            "daily_pnl_pct": -0.02,
-            "weekly_pnl_pct": -0.08,
+            "daily_pnl_pct": -0.05,
+            "weekly_pnl_pct": -0.10,
             "total_exposure_pct": 0.0,
         }
 

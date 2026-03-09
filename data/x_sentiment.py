@@ -52,39 +52,10 @@ class SentimentData:
 
 # System prompt for the sentiment-gathering call
 _SENTIMENT_SYSTEM_PROMPT = """\
-You are a crypto market sentiment analyst. Your job is to search X (Twitter) \
-for recent posts about the given cryptocurrency assets and produce a structured \
-sentiment report.
-
-For each asset, search X for recent discussion (last few hours). Analyze the \
-tone, volume, and key themes of the conversation.
-
-Return your analysis as a JSON object with this exact structure:
-{
-    "assets": {
-        "BTC": {
-            "score": 0.45,
-            "momentum": "bullish",
-            "volume": "high",
-            "key_topics": ["whale accumulation", "ETF inflows"],
-            "raw_summary": "Predominantly bullish sentiment with focus on institutional buying."
-        },
-        ...same structure for each asset...
-    }
-}
-
-Score guidelines:
-- -1.0 to -0.6: Extreme bearish (panic, capitulation talk, mass liquidations)
-- -0.6 to -0.2: Bearish (concern, selling pressure, negative news)
-- -0.2 to 0.2: Neutral (mixed, no clear direction)
-- 0.2 to 0.6: Bullish (optimism, buying interest, positive catalysts)
-- 0.6 to 1.0: Extreme bullish (euphoria, FOMO, parabolic calls)
-
-Momentum: Overall direction of sentiment shift ("bullish" if improving, "bearish" if worsening, "neutral" if stable).
-Volume: Discussion volume relative to normal ("high" if trending, "low" if quiet).
-Key topics: 2-3 most discussed themes (e.g., "whale moves", "regulatory news", "exchange listing").
-
-IMPORTANT: Only return the JSON object, nothing else. If you cannot find data for an asset, use score=0.0, momentum="neutral", volume="low".\
+Crypto sentiment analyst. Search X for each asset, return JSON only:
+{"assets":{"BTC":{"score":0.45,"momentum":"bullish","volume":"high","key_topics":["topic1","topic2"]},...}}
+Score: -1(panic) to +1(euphoria). Momentum: bullish/bearish/neutral. Volume: high/normal/low.
+Key_topics: max 2 per asset. No raw_summary needed. Missing data → score=0, momentum=neutral, volume=low.\
 """
 
 

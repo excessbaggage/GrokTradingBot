@@ -131,15 +131,16 @@ def build_context_prompt(
         if performance_summary:
             sections.append(_build_performance_section(performance_summary))
 
-        # ── CORRELATION AWARENESS ─────────────────────────────────────
+        # ── CORRELATION AWARENESS (skip when <2 positions — nothing to correlate)
         open_position_assets = [
             p.get("asset", "") for p in portfolio.get("positions", [])
         ]
-        correlation_section = _build_correlation_section(
-            market_data, open_position_assets,
-        )
-        if correlation_section:
-            sections.append(correlation_section)
+        if len(open_position_assets) >= 2:
+            correlation_section = _build_correlation_section(
+                market_data, open_position_assets,
+            )
+            if correlation_section:
+                sections.append(correlation_section)
 
         # ── STRATEGY PERFORMANCE (BACKTEST) ──────────────────────────
         if backtest_context:
@@ -209,11 +210,10 @@ def _build_asset_section(
     current_oi = oi.get("current_oi", 0)
     oi_change = oi.get("oi_24h_change_pct", 0)
 
-    # Candle summaries — use compact single-line format
+    # Candle summaries — use compact single-line format (skip 1h to save tokens)
     candles = data.get("candles", {})
     summary_4h = _compact_candle_summary(candles.get("4h"), "4h")
     summary_1d = _compact_candle_summary(candles.get("1d"), "1d")
-    summary_1h = _compact_candle_summary(candles.get("1h"), "1h")
 
     # Technical indicators (ATR, RSI, adaptive thresholds)
     tech = data.get("technicals", {})
@@ -228,7 +228,6 @@ def _build_asset_section(
     lines = [
         f"### {asset}",
         f"Price={format_usd(price)} 24h={format_pct(change_24h)} | Fund={funding_current:.4f}% 7d={funding_7d:.4f}% | OI={format_usd(current_oi)} {format_pct(oi_change / 100 if oi_change else 0)}",
-        f"1h: {summary_1h}",
         f"4h: {summary_4h}",
         f"1d: {summary_1d}",
         f"ATR={format_usd(atr_14)}({format_pct(atr_pct)}) RSI={rsi_14}(OB={adaptive_ob},OS={adaptive_os}) Vol={vol_regime.upper()} Turtle={turtle_factor:.2f}x",
@@ -311,7 +310,7 @@ def _build_positions_section(positions: list[dict[str, Any]]) -> str:
 
 def _build_recent_trades_section(trades: list[dict[str, Any]]) -> str:
     """Build the recent trades table."""
-    header = "### Recent Trades (Last 10)"
+    header = "### Recent Trades (Last 5)"
 
     if not trades:
         return f"{header}\nNo recent trades."
@@ -320,7 +319,7 @@ def _build_recent_trades_section(trades: list[dict[str, Any]]) -> str:
     separator = "|------|-------|------|--------|-------|------|-----|--------|"
 
     rows: list[str] = []
-    for t in trades[:10]:
+    for t in trades[:5]:
         entry = format_usd(t.get("entry_price", 0)) if t.get("entry_price") else "N/A"
         exit_p = format_usd(t.get("exit_price", 0)) if t.get("exit_price") else "N/A"
         pnl_str = format_usd(t.get("pnl", 0)) if t.get("pnl") is not None else "N/A"

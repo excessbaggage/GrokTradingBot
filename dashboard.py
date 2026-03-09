@@ -323,7 +323,7 @@ def api_trades():
         rows = db.execute(
             """SELECT asset, side, action, size_pct, leverage,
                       entry_price, exit_price, stop_loss, take_profit,
-                      pnl, pnl_pct, status, conviction, reasoning,
+                      pnl, pnl_pct, fees, status, conviction, reasoning,
                       opened_at, closed_at
                FROM trades ORDER BY opened_at DESC LIMIT 50"""
         ).fetchall()
@@ -862,11 +862,12 @@ DASHBOARD_HTML = """
                                 <th>Entry</th>
                                 <th>Exit</th>
                                 <th>P&L</th>
+                                <th>Fee</th>
                                 <th>Status</th>
                             </tr>
                         </thead>
                         <tbody id="trades-table">
-                            <tr><td colspan="9" class="text-center text-dark-muted py-8">No trades yet</td></tr>
+                            <tr><td colspan="10" class="text-center text-dark-muted py-8">No trades yet</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -1197,7 +1198,7 @@ DASHBOARD_HTML = """
 
         const tbody = document.getElementById('trades-table');
         if (!data.trades || data.trades.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-dark-muted py-8">No trades yet</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" class="text-center text-dark-muted py-8">No trades yet</td></tr>';
             return;
         }
 
@@ -1211,6 +1212,7 @@ DASHBOARD_HTML = """
                 <td>${fmtPrice(t.entry_price)}</td>
                 <td>${fmtPrice(t.exit_price)}</td>
                 <td class="${pnlColor(t.pnl)}">${t.pnl != null ? fmtUsd(t.pnl) : '-'}</td>
+                <td class="text-dark-muted">${t.fees != null ? fmtUsd(t.fees) : '-'}</td>
                 <td>
                     <span class="px-2 py-0.5 rounded text-xs ${t.status === 'open' ? 'bg-accent/20 text-accent' : 'bg-dark-border text-dark-muted'}">
                         ${escapeHtml(t.status)}

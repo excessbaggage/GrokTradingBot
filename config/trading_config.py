@@ -26,14 +26,14 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # === Trading Settings ===
 LIVE_TRADING = os.getenv("LIVE_TRADING", "False").lower() == "true"
 STARTING_CAPITAL = float(os.getenv("STARTING_CAPITAL", "10000"))
-CYCLE_INTERVAL_MINUTES = int(os.getenv("CYCLE_INTERVAL_MINUTES", "5"))
+CYCLE_INTERVAL_MINUTES = int(os.getenv("CYCLE_INTERVAL_MINUTES", "15"))
 MIN_CYCLE_INTERVAL_MINUTES = 5  # Absolute minimum between cycles
-MAX_CYCLE_INTERVAL_MINUTES = int(os.getenv("MAX_CYCLE_INTERVAL_MINUTES", "30"))  # Cap for active trading
+MAX_CYCLE_INTERVAL_MINUTES = int(os.getenv("MAX_CYCLE_INTERVAL_MINUTES", "60"))  # Cap for active trading
 
 # === Grok Model ===
 GROK_MODEL = os.getenv("GROK_MODEL", "grok-4-1-fast-reasoning")
 XAI_BASE_URL = "https://api.x.ai/v1"
-GROK_MAX_TOKENS = 4096
+GROK_MAX_TOKENS = 1500  # Actual output is ~400-800 tokens; 1500 is ample headroom
 GROK_TEMPERATURE = 0.5  # Moderate temperature for varied trade ideas (was 0.3 in conservative mode)
 
 # === Asset Universe ===
@@ -46,8 +46,8 @@ ASSET_UNIVERSE = [
 
 # === X Sentiment Settings ===
 X_SENTIMENT_ENABLED = os.getenv("X_SENTIMENT_ENABLED", "True").lower() == "true"
-X_SENTIMENT_MODEL = os.getenv("X_SENTIMENT_MODEL", "grok-4-1-fast-reasoning")
-X_SENTIMENT_CACHE_MINUTES = 5  # Reuse cached sentiment within this window
+X_SENTIMENT_MODEL = os.getenv("X_SENTIMENT_MODEL", "grok-4-1-fast-reasoning")  # Same model as trading (API key only has access to this model)
+X_SENTIMENT_CACHE_MINUTES = 15  # Reuse cached sentiment within this window (saves ~67% of sentiment API calls)
 
 # === Hyperliquid Settings ===
 HYPERLIQUID_MAINNET_URL = "https://api.hyperliquid.xyz"
@@ -58,9 +58,8 @@ def get_hyperliquid_url() -> str:
     return HYPERLIQUID_MAINNET_URL if LIVE_TRADING else HYPERLIQUID_TESTNET_URL
 
 # === Candle Intervals for Data Fetching ===
-CANDLE_INTERVALS = ["1h", "4h", "1d"]
+CANDLE_INTERVALS = ["4h", "1d"]  # Dropped 1h to save tokens + API calls
 CANDLE_LOOKBACK = {
-    "1h": 48,   # Last 48 hourly candles
     "4h": 20,   # Last 20 4-hour candles
     "1d": 10,   # Last 10 daily candles
 }

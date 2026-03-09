@@ -77,7 +77,7 @@ class TestKillSwitch:
 
 
 class TestDailyLossLimit:
-    """When daily loss >= 6%, all opening trades must be rejected."""
+    """When daily loss >= 10%, all opening trades must be rejected."""
 
     def test_daily_loss_limit_blocks_trades(
         self,
@@ -86,7 +86,7 @@ class TestDailyLossLimit:
         daily_loss_portfolio: dict[str, Any],
         empty_db: sqlite3.Connection,
     ) -> None:
-        """Daily loss at -6% triggers rejection."""
+        """Daily loss at -10% triggers rejection."""
         result = risk_guardian.validate(
             valid_long_decision, daily_loss_portfolio, empty_db
         )
@@ -119,7 +119,7 @@ class TestDailyLossLimit:
 
 
 class TestWeeklyLossLimit:
-    """When weekly loss >= 12%, all opening trades must be rejected."""
+    """When weekly loss >= 20%, all opening trades must be rejected."""
 
     def test_weekly_loss_limit_blocks_trades(
         self,
@@ -128,7 +128,7 @@ class TestWeeklyLossLimit:
         weekly_loss_portfolio: dict[str, Any],
         empty_db: sqlite3.Connection,
     ) -> None:
-        """Weekly loss at -12% triggers rejection."""
+        """Weekly loss at -20% triggers rejection."""
         result = risk_guardian.validate(
             valid_long_decision, weekly_loss_portfolio, empty_db
         )
@@ -196,11 +196,11 @@ class TestPositionSizeLimit:
         healthy_portfolio: dict[str, Any],
         empty_db: sqlite3.Connection,
     ) -> None:
-        """Position size > 15% should be rejected."""
+        """Position size > 25% should be rejected."""
         oversized = TradeDecision.model_construct(
             action="open_long",
             asset="BTC",
-            size_pct=0.20,  # 20% -- over the 15% limit
+            size_pct=0.30,  # 30% -- over the 25% limit
             leverage=2.0,
             entry_price=65000.0,
             stop_loss=63000.0,
@@ -221,11 +221,11 @@ class TestPositionSizeLimit:
         healthy_portfolio: dict[str, Any],
         empty_db: sqlite3.Connection,
     ) -> None:
-        """Position size at exactly 15% should pass (not strictly greater)."""
+        """Position size at exactly 25% should pass (not strictly greater)."""
         at_limit = TradeDecision(
             action="open_long",
             asset="BTC",
-            size_pct=0.15,
+            size_pct=0.25,
             leverage=2.0,
             entry_price=65000.0,
             stop_loss=63000.0,
@@ -246,7 +246,7 @@ class TestPositionSizeLimit:
 
 
 class TestTotalExposureLimit:
-    """Reject if total exposure would exceed 60%."""
+    """Reject if total exposure would exceed 85%."""
 
     def test_total_exposure_limit(
         self,
@@ -254,7 +254,7 @@ class TestTotalExposureLimit:
         high_exposure_portfolio: dict[str, Any],
         empty_db: sqlite3.Connection,
     ) -> None:
-        """Adding 10% to existing 55% exposure = 65% > 60% limit."""
+        """Adding 10% to existing 80% exposure = 90% > 85% limit."""
         decision = TradeDecision(
             action="open_long",
             asset="ETH",
@@ -280,13 +280,13 @@ class TestTotalExposureLimit:
         risk_guardian: RiskGuardian,
         empty_db: sqlite3.Connection,
     ) -> None:
-        """Adding 5% to existing 50% = 55% under limit, should pass."""
+        """Adding 5% to existing 75% = 80% under limit, should pass."""
         portfolio: dict[str, Any] = {
             "equity": 10_000.0,
             "peak_equity": 10_000.0,
             "daily_pnl_pct": 0.0,
             "weekly_pnl_pct": 0.0,
-            "total_exposure_pct": 0.50,
+            "total_exposure_pct": 0.75,
         }
         decision = TradeDecision(
             action="open_long",

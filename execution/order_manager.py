@@ -810,16 +810,21 @@ class OrderManager:
         else:
             pnl_pct = (entry - mark_price) / entry * leverage if entry > 0 else 0.0
 
+        # Calculate close fees on exit notional
+        close_size_pct = size or pos["size_pct"]
+        close_notional = close_size_pct * mark_price * leverage
+        close_fees = round(close_notional * _paper_state.simulated_fee_rate, 6)
+
         close_result = {
             "order_id": f"paper_close_{uuid.uuid4().hex[:8]}",
             "asset": asset,
             "side": f"close_{pos['side']}",
-            "size_pct": size or pos["size_pct"],
+            "size_pct": close_size_pct,
             "entry_price": entry,
             "exit_price": mark_price,
             "pnl_pct": round(pnl_pct, 6),
             "status": "filled",
-            "fees": 0.0,
+            "fees": close_fees,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "live": False,
         }
